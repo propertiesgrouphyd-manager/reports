@@ -2,7 +2,7 @@ name: 7PM Reports Automation
 
 on:
   schedule:
-    - cron: "0 11 * * *"     # Runs every hour (UTC)
+    - cron: "30 11 * * *"     # Runs every hour (UTC)
   workflow_dispatch:        # Manual trigger button in GitHub UI
 
 jobs:
