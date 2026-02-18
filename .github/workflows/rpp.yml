@@ -1,0 +1,25 @@
+name: RPP Reports Automation
+
+on:
+  schedule:
+    - cron: "0 * * * *"     # Runs every hour (UTC)
+  workflow_dispatch:        # Manual trigger button in GitHub UI
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run hourly script
+        run: python rpp.py
