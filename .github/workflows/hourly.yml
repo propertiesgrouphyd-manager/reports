@@ -1,8 +1,6 @@
 name: Hourly Reports Automation
 
 on:
-  schedule:
-    - cron: "0 * * * *"     # Runs every hour (UTC)
   workflow_dispatch:        # Manual trigger button in GitHub UI
 
 jobs:
