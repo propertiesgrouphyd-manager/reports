@@ -19,7 +19,6 @@ IST = pytz.timezone("Asia/Kolkata")
 
 now = datetime.now(IST)
 
-
 MAX_FULL_RUN_RETRIES = 5
 FULL_RUN_RETRY_DELAY = 10  # seconds
 
@@ -35,7 +34,7 @@ ROOMS_TIMEOUT = 25
 BATCH_TIMEOUT = 35
 
 TELEGRAM_BOT_TOKEN = "8457091054:AAHNcJeIpf2-ugHbzaFoImlFuN5lxRbcC5Q"
-TELEGRAM_CHAT_ID = -5177270008
+TELEGRAM_CHAT_ID = -5151202618
 
 # ================= PROPERTIES =================
 PROPERTIES = {
@@ -58,46 +57,113 @@ PROPERTIES = {
     17: {'name':"NGA028","UIF":"eyJlbWFpbCI6ImtzYW5qZWV2YTlAZ21haWwuY29tIiwiYWNjZXNzX3Rva2VuIjoiX3FQZFdWSjNTeHNINVE3ZGs0S05xdyIsInJvbGUiOiJPd25lciIsImlkIjo3MjA4MjY4OCwicGhvbmUiOiI4NDk5ODgzMzExIiwiY291bnRyeV9jb2RlIjoiKzkxIiwiZmlyc3RfbmFtZSI6IkthbXNhbmkiLCJsYXN0X25hbWUiOiJTYW5qZWV2YSIsInRlYW0iOiJPcGVyYXRpb25zIiwiZGV2aXNlX3JvbGUiOiJPd25lcl9Qb3J0YWxfVXNlciIsInBob25lX3ZlcmlmaWVkIjp0cnVlLCJlbWFpbF92ZXJpZmllZCI6dHJ1ZSwidXBkYXRlZF9hdCI6IjE3NjQ3NTc5NjIiLCJmZWF0dXJlcyI6e30sInN0YXR1c19jb2RlIjoxMDAsIm1pbGxpc19sZWZ0X2Zvcl9wYXNzd29yZF9leHBpcnkiOjk0NzQyMTczMzQzMSwiYWRkcmVzc0pzb24iOnt9fQ%3D%3D","UUID":"NzRkNjcyMmEtNTU5Ni00NWM0LTk3NjQtNmFkZTVjODE5YjQ2","QID": 353264},
 }
 # ================= TELEGRAM =================
-# NEW FEATURE: REUSE SESSION (but keeps same capability)
-async def send_telegram_message(text, retries=3, session=None):
+# ✅ ULTRA SAFE: Guaranteed ordered sending (one-by-one)
+# ✅ Handles 429 retry_after properly
+# ✅ Strictly verifies JSON "ok": true
+# ✅ Auto-split long messages
+# ✅ Exponential backoff retries
+# ✅ Never loses a property message unless Telegram is fully down
+
+TELEGRAM_SEND_LOCK = asyncio.Lock()
+
+async def send_telegram_message(text, retries=15, session=None):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}
 
-    async def _post(sess):
+    def split_message(msg, limit=3900):
+        msg = str(msg or "")
+        if len(msg) <= limit:
+            return [msg]
+
+        parts = []
+        while len(msg) > limit:
+            cut = msg.rfind("\n", 0, limit)
+            if cut == -1 or cut < 1000:
+                cut = limit
+            parts.append(msg[:cut].strip())
+            msg = msg[cut:].strip()
+        if msg:
+            parts.append(msg)
+        return parts
+
+    async def _post(sess, msg_part):
+        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg_part, "parse_mode": "HTML"}
+
         async with sess.post(url, json=payload, timeout=25) as resp:
-            if resp.status == 200:
-                return True
-            raise RuntimeError(f"Telegram HTTP {resp.status}")
+            # ✅ 429 flood control
+            if resp.status == 429:
+                retry_after = 5
+                try:
+                    data = await resp.json()
+                    retry_after = int(data.get("parameters", {}).get("retry_after", 5))
+                except Exception:
+                    retry_after = 5
 
-    # if session not provided, keep old behavior (no feature removed)
-    if session is None:
-        for attempt in range(1, retries + 1):
+                print(f"⚠️ TELEGRAM 429 RATE LIMIT → sleeping {retry_after}s")
+                await asyncio.sleep(retry_after + 1)
+                return False
+
+            # ✅ Non-200
+            if resp.status != 200:
+                try:
+                    err = await resp.text()
+                except Exception:
+                    err = ""
+                raise RuntimeError(f"Telegram HTTP {resp.status} {err}")
+
+            # ✅ Very important: Telegram sometimes returns 200 but ok:false
             try:
-                async with aiohttp.ClientSession() as s:
-                    if await _post(s):
-                        return
-            except Exception as e:
-                if attempt == retries:
-                    print("❌ TELEGRAM FAILED AFTER RETRIES")
-                    print(e)
-                await asyncio.sleep(2)
-        async with aiohttp.ClientSession() as s:
-            if not await _post(s):
-                raise RuntimeError("Telegram send failed")
-        return
+                data = await resp.json()
+            except Exception:
+                data = {}
 
-    # session provided (stable + fast)
-    for attempt in range(1, retries + 1):
-        try:
-            if await _post(session):
-                return
-        except Exception as e:
-            if attempt == retries:
-                print("❌ TELEGRAM FAILED AFTER RETRIES")
-                print(e)
-            await asyncio.sleep(2)
+            if data.get("ok") is True:
+                return True
 
-    raise RuntimeError("Telegram send failed")
+            # ok:false -> treat as failure and retry
+            desc = data.get("description", "Unknown Telegram error")
+            raise RuntimeError(f"Telegram API ok:false → {desc}")
+
+    parts = split_message(text)
+
+    # ✅ Guarantee ONE-BY-ONE send (no burst)
+    async with TELEGRAM_SEND_LOCK:
+
+        # If session not provided (still works as before)
+        if session is None:
+            async with aiohttp.ClientSession() as s:
+                for part in parts:
+                    last_err = None
+                    for attempt in range(1, retries + 1):
+                        try:
+                            ok = await _post(s, part)
+                            if ok:
+                                await asyncio.sleep(0.3)  # small safe gap
+                                break
+                        except Exception as e:
+                            last_err = e
+                            wait = min(60, 2 * attempt)  # backoff
+                            print(f"⚠️ Telegram retry {attempt}/{retries} → {wait}s :: {e}")
+                            await asyncio.sleep(wait)
+                    else:
+                        raise RuntimeError(f"Telegram send failed after retries: {last_err}")
+            return
+
+        # ✅ Session provided (fast + stable)
+        for part in parts:
+            last_err = None
+            for attempt in range(1, retries + 1):
+                try:
+                    ok = await _post(session, part)
+                    if ok:
+                        await asyncio.sleep(0.3)  # small safe gap
+                        break
+                except Exception as e:
+                    last_err = e
+                    wait = min(60, 2 * attempt)  # backoff
+                    print(f"⚠️ Telegram retry {attempt}/{retries} → {wait}s :: {e}")
+                    await asyncio.sleep(wait)
+            else:
+                raise RuntimeError(f"Telegram send failed after retries: {last_err}")
 
 # ================= BEAUTIFY EXCEL =================
 def beautify(ws):
@@ -328,7 +394,6 @@ async def process_property(P, TF, TT, HF, HT):
         if total_rooms == 0:
             raise RuntimeError("TOTAL ROOMS FETCH FAILED")
 
-        # NEW FEATURE: limit detail calls per property
         detail_semaphore = asyncio.Semaphore(DETAIL_PARALLEL_LIMIT)
 
         async def limited_detail_call(booking_no):
@@ -339,10 +404,8 @@ async def process_property(P, TF, TT, HF, HT):
         offset = 0
         upcoming_count = cancelled_count = inhouse_count = checkedout_count = 0
 
-        # ================= TARGET DATE COLLECTION (NOT DIVIDED) =================
-        target_collect_date = str(TF).strip()
-        today_collect = {"cash": 0.0, "qr": 0.0, "online": 0.0}
-        today_seen_bookings = set()
+        early_checkins = set()
+        late_checkouts = set()
 
         while True:
             data = await fetch_bookings_batch(session, offset, HF, HT, P)
@@ -370,7 +433,7 @@ async def process_property(P, TF, TT, HF, HT):
                     co = datetime.strptime(b["checkout"], "%Y-%m-%d")
                     tf_date = datetime.strptime(TF, "%Y-%m-%d")
 
-                    # ---- STATUS COUNTS (UNCHANGED) ----
+                    # ---- STATUS COUNTS ----
                     if status == "Checked In":
                         if ci <= tf_date or ci == tf_date + timedelta(days=1):
                             inhouse_count += 1
@@ -389,11 +452,19 @@ async def process_property(P, TF, TT, HF, HT):
                         if ci == tf_date or ci == tf_date + timedelta(days=1):
                             cancelled_count += 1
 
-                    # ---------- ROW FILTER (UNCHANGED) ----------
-                    if status not in ["Checked In", "Checked Out"]:
+                    # ---- EARLY / LATE DETECTION ----
+                    if status == "Checked In":
+                        if ci.date() > tf_date.date():
+                            early_checkins.add(str(b.get("booking_no", "")).strip())
+
+                        if co.date() == tf_date.date():
+                            late_checkouts.add(str(b.get("booking_no", "")).strip())
+
+                    # ---------- ROW FILTER ----------
+                    if status != "Checked In":
                         continue
 
-                    if not (target_dt >= ci and target_dt < co):
+                    if not (ci <= target_dt < co or (ci == tf_date + timedelta(days=1) and target_dt < co)):
                         continue
 
                     tasks.append(limited_detail_call(b["booking_no"]))
@@ -406,19 +477,9 @@ async def process_property(P, TF, TT, HF, HT):
 
                 for res, (b, target, ci, co) in zip(results, mapping):
                     if isinstance(res, Exception):
-                        # detail fail shouldn't kill property
                         continue
 
                     rooms, cash, qr, online, discount, balance = res
-
-                    # ================= TARGET DATE COLLECTION (NOT DIVIDED) =================
-                    # Collect only bookings whose CHECK-IN is exactly TF
-                    # Add once per booking_id (not repeated for each stay date)
-                    if str(b.get("checkin", "")).strip() == target_collect_date and b["booking_no"] not in today_seen_bookings:
-                        today_seen_bookings.add(b["booking_no"])
-                        today_collect["cash"] += float(cash or 0)
-                        today_collect["qr"] += float(qr or 0)
-                        today_collect["online"] += float(online or 0)
 
                     stay = max((co - ci).days, 1)
                     paid = float(b.get("get_amount_paid") or 0)
@@ -451,9 +512,8 @@ async def process_property(P, TF, TT, HF, HT):
 
         df = pd.DataFrame(all_rows)
 
-        # NEW FEATURE: DO NOT FAIL PROPERTY IF NO ROWS
         if df.empty:
-            print(f"⚠️ NO ROWS → {P['name']} (month has no stays)")
+            print(f"⚠️ NO ROWS → {P['name']}")
             df = pd.DataFrame(columns=[
                 "Date", "Booking Id", "Guest Name", "Status", "Booking Source",
                 "Check In", "Check Out", "Rooms", "Room Numbers",
@@ -470,9 +530,9 @@ async def process_property(P, TF, TT, HF, HT):
             checkedout_count,
             upcoming_count,
             cancelled_count,
-            today_collect  # ✅ added for telegram today collection
+            sorted(list(early_checkins)),
+            sorted(list(late_checkouts))
         )
-
 
 
 # ================= RELIABILITY WRAPPER =================
@@ -491,6 +551,44 @@ async def run_property_with_retry(P, TF, TT, HF, HT, retries=3):
 async def run_property_limited(P, TF, TT, HF, HT):
     async with prop_semaphore:
         return await run_property_with_retry(P, TF, TT, HF, HT)
+
+
+
+
+
+def build_early_late_alert_message(prop, report_date, early_list, late_list):
+    """
+    Telegram HTML does not support font colors.
+    So we use 🟢 and 🔴 icons for clear green/red indication.
+    """
+    early_count = len(early_list)
+    late_count = len(late_list)
+
+    if early_count == 0 and late_count == 0:
+        return None
+
+    lines = []
+    lines.append("<b>IN-HOUSE EXCEPTION ALERT</b>")
+    lines.append(f"<b>🏢 Property :</b> {prop}")
+    lines.append(f"<b>📅 Date     :</b> {report_date}")
+    lines.append("")
+
+    if early_count > 0:
+        lines.append(f"🟢 <b>EARLY CHECK-IN FOUND :</b> <b>{early_count}</b>")
+        # show max 10 booking ids for neatness
+        show = early_list[:10]
+        lines.append(f"<b>Booking IDs:</b> {', '.join(show)}" + (" ..." if early_count > 10 else ""))
+        lines.append("")
+
+    if late_count > 0:
+        lines.append(f"🔴 <b>LATE CHECK-OUT FOUND :</b> <b>{late_count}</b>")
+        show = late_list[:10]
+        lines.append(f"<b>Booking IDs:</b> {', '.join(show)}" + (" ..." if late_count > 10 else ""))
+        lines.append("")
+
+    lines.append("<b>Action Required:</b> Please verify front-office status immediately.")
+
+    return "\n".join(lines).strip()
 
 # ================= COUNT / AMOUNT =================
 def count(df, src):
@@ -537,74 +635,85 @@ def count_cancelled(df, tf):
 
     return c
 
-def build_daily_revenue_message(
+def build_telegram_message(
     prop,
-    report_date,
     total_rooms,
     booked_rooms,
     available_rooms,
     occupancy,
-    total_amount,
-    cash,
-    qr,
-    online,
-    discount,
-    balance,
+    inhouse,
+    checkedout,
+    upcoming,
+    cancelled,
+    counts,
     amounts,
     arr,
     app_arr
 ):
+    now = datetime.now(IST)
+
     return f"""
 <pre>
-DAILY REVENUE REPORT : {prop}
+HOURLY REPORT : {prop}
 
 🏢 Property Code     : {prop}
-📅 Date              : {report_date}
+📅 Date              : {now.strftime("%d/%m/%Y")}
+⏰ Time              : {now.strftime("%I:%M %p")}
+📆 Day               : {now.strftime("%A")}
 
 🔹 URN In-House      : {booked_rooms}
+🔹 Checked Out       : {checkedout:02d}
+🔹 Upcoming Bookings : {upcoming:02d}
+🔹 Cancelled         : {cancelled:02d}
 
 🔹 Total Rooms       : {total_rooms}
 🔹 Booked Rooms      : {booked_rooms}
 🔹 Available Rooms   : {available_rooms}
 🔹 Occupancy         : {occupancy}%
 
-🔹 Total Amount      : ₹{total_amount:,}
-🔹 Cash              : ₹{cash:,}
-🔹 QR                : ₹{qr:,}
-🔹 Online            : ₹{online:,}
-🔹 Discount          : ₹{discount:,}
-🔹 Balance           : ₹{balance:,}
+🔹 Walk-in           : {counts['Walk-in']:02d}
+🔹 OYO               : {counts['OYO']:02d}
+🔹 MMT               : {counts['MMT']:02d}
+🔹 Agoda             : {counts['Agoda']:02d}
+🔹 CB                : {counts['CB']:02d}
+🔹 BDC               : {counts['BDC']:02d}
+🔹 TA                : {counts['TA']:02d}
+🔹 OBA               : {counts['OBA']:02d}
+
+🔹 Total Amount      : ₹{amounts['Total']:,}
+🔹 Cash              : ₹{amounts['Cash']:,}
+🔹 QR                : ₹{amounts['QR']:,}
+🔹 Online            : ₹{amounts['Online']:,}
+🔹 Discount          : ₹{amounts['Discount']:,}
+🔹 Balance           : ₹{amounts['Balance']:,}
 
 🔹 ARR               : ₹{arr}
 🔹 App ARR           : ₹{app_arr}
 
-✅ Today Collection
-🔸 Cash              : ₹{amounts['TodayCash']:,}
-🔸 QR                : ₹{amounts['TodayQR']:,}
-🔸 Online            : ₹{amounts['TodayOnline']:,}
-🔸 Total             : ₹{amounts['TodayTotal']:,}
 </pre>
 """.strip()
 
+
+# ================= MAIN =================
 # ================= MAIN =================
 async def main():
     print("========================================")
-    print(" OYO DAILY REVENUE TELEGRAM AUTOMATION")
+    print(" OYO DAILY TELEGRAM AUTOMATION")
     print("========================================")
 
     now = datetime.now(IST)
 
-    # -------- BUSINESS / TARGET DATE LOGIC (UNCHANGED) --------
+    # ================= BUSINESS DATE CUTOVER (12 PM RULE) =================
     if now.hour < 12:
         target_date = (now - timedelta(days=1)).date()
     else:
         target_date = now.date()
 
-    TF = (now.date() - timedelta(days=1)).strftime("%Y-%m-%d")
+    # ================= PREVIOUS MONTH (BASED ON TARGET_DATE) =================
+    TF = target_date.strftime("%Y-%m-%d")
     TT = TF
-    HF = (target_date - timedelta(days=120)).strftime("%Y-%m-%d")
+    HF = (target_date - timedelta(days=30)).strftime("%Y-%m-%d")
     HT = now.strftime("%Y-%m-%d")
-
 
     # ================= SMART RETRY (ONLY FAILED PROPERTIES) =================
     pending = {k: v for k, v in PROPERTIES.items()}
@@ -630,7 +739,6 @@ async def main():
 
             name, df, *_ = result
 
-            # strict verify (df always exists now; empty allowed as valid)
             if df is None:
                 print(f"❌ EMPTY DATA → {name}")
                 new_pending[key] = P
@@ -659,12 +767,12 @@ async def main():
     print("✅ DATA VERIFIED — ALL PROPERTIES PRESENT")
 
     async with aiohttp.ClientSession() as tg_session:
-        # ================= PER-PROPERTY MONTHLY REPORTS =================
-        for name, df, total_rooms, inhouse, checkedout, upcoming, cancelled, today_collect in valid_results:
+
+        # ================= PER-PROPERTY REPORTS =================
+        for name, df, total_rooms, inhouse, checkedout, upcoming, cancelled, early_checkins, late_checkouts in valid_results:
 
             booked_rooms = int(df["Rooms"].sum()) if not df.empty else 0
 
-            # NEW FEATURE: total rooms multiplied by days
             booked_rooms = int(df["Rooms"].sum())
             available_rooms = total_rooms - booked_rooms
             occupancy = round((booked_rooms / total_rooms) * 100) if total_rooms else 0
@@ -694,42 +802,46 @@ async def main():
                 "QR": int(df["QR"].sum()) if not df.empty else 0,
                 "Online": int(df["Online"].sum()) if not df.empty else 0,
                 "Discount": int(df["Discount"].sum()) if not df.empty else 0,
-                "Balance": int(df["Balance"].sum()) if not df.empty else 0,
-
-                # ✅ NEW: TARGET DATE COLLECTION (NOT DIVIDED)
-                "TodayCash": int(today_collect.get("cash", 0)),
-                "TodayQR": int(today_collect.get("qr", 0)),
-                "TodayOnline": int(today_collect.get("online", 0)),
-                "TodayTotal": int(
-                    float(today_collect.get("cash", 0)) +
-                    float(today_collect.get("qr", 0)) +
-                    float(today_collect.get("online", 0))
-                )
+                "Balance": int(df["Balance"].sum()) if not df.empty else 0
             }
 
-            revenue_message = build_daily_revenue_message(
+            hourly_message = build_telegram_message(
                 prop=name,
-                report_date=datetime.strptime(TF, "%Y-%m-%d").strftime("%d/%m/%Y"),
                 total_rooms=total_rooms,
                 booked_rooms=booked_rooms,
                 available_rooms=available_rooms,
                 occupancy=occupancy,
-                total_amount=amounts["Total"],
-                cash=amounts["Cash"],
-                qr=amounts["QR"],
-                online=amounts["Online"],
-                discount=amounts["Discount"],
-                balance=amounts["Balance"],
+                inhouse=inhouse,
+                checkedout=checkedout,
+                upcoming=upcoming,
+                cancelled=cancelled,
+                counts=counts,
                 amounts=amounts,
                 arr=arr,
                 app_arr=app_arr
             )
 
-            await send_telegram_message(revenue_message, session=tg_session)
+            await send_telegram_message(hourly_message, session=tg_session)
             await asyncio.sleep(1.5)
 
+            # ================= EARLY / LATE ALERT =================
+            if (early_checkins and len(early_checkins) > 0) or (late_checkouts and len(late_checkouts) > 0):
 
-        # ================= CONSOLIDATED MONTHLY REPORT =================
+                alert_msg = build_early_late_alert_message(
+                    prop=name,
+                    report_date=datetime.strptime(TF, "%Y-%m-%d").strftime("%d/%m/%Y"),
+                    early_list=early_checkins or [],
+                    late_list=late_checkouts or []
+                )
+
+                if alert_msg:
+                    try:
+                        await send_telegram_message(alert_msg, session=tg_session)
+                        await asyncio.sleep(1.5)
+                    except Exception as e:
+                        print(f"⚠️ ALERT TELEGRAM FAILED → {name} :: {e}")
+
+        # ================= CONSOLIDATED REPORT =================
         all_df = pd.concat([r[1] for r in valid_results], ignore_index=True)
 
         total_rooms_all = sum(r[2] for r in valid_results)
@@ -740,7 +852,6 @@ async def main():
 
         booked_rooms_all = int(all_df["Rooms"].sum()) if not all_df.empty else 0
 
-        # NEW FEATURE: consolidated total rooms * month days
         booked_rooms_all = int(all_df["Rooms"].sum())
         available_rooms_all = total_rooms_all - booked_rooms_all
         occupancy_all = round((booked_rooms_all / total_rooms_all) * 100) if total_rooms_all else 0
@@ -755,57 +866,34 @@ async def main():
 
         counts_all = {k: count(all_df, k) for k in ["Walk-in","OYO","MMT","Agoda","CB","BDC","TA","OBA"]}
 
-        # ✅ NEW: CONSOLIDATED TARGET DATE COLLECTION (NOT DIVIDED)
-        consolidated_today_collect = {"cash": 0.0, "qr": 0.0, "online": 0.0}
-        for res in valid_results:
-            tc = res[-1]
-            consolidated_today_collect["cash"] += float(tc.get("cash", 0))
-            consolidated_today_collect["qr"] += float(tc.get("qr", 0))
-            consolidated_today_collect["online"] += float(tc.get("online", 0))
-
         amounts_all = {
             "Total": int(total_amount_all),
             "Cash": int(all_df["Cash"].sum()) if not all_df.empty else 0,
             "QR": int(all_df["QR"].sum()) if not all_df.empty else 0,
             "Online": int(all_df["Online"].sum()) if not all_df.empty else 0,
             "Discount": int(all_df["Discount"].sum()) if not all_df.empty else 0,
-            "Balance": int(all_df["Balance"].sum()) if not all_df.empty else 0,
-
-            # ✅ NEW: TARGET DATE COLLECTION (NOT DIVIDED)
-            "TodayCash": int(consolidated_today_collect.get("cash", 0)),
-            "TodayQR": int(consolidated_today_collect.get("qr", 0)),
-            "TodayOnline": int(consolidated_today_collect.get("online", 0)),
-            "TodayTotal": int(
-                float(consolidated_today_collect.get("cash", 0)) +
-                float(consolidated_today_collect.get("qr", 0)) +
-                float(consolidated_today_collect.get("online", 0))
-            )
+            "Balance": int(all_df["Balance"].sum()) if not all_df.empty else 0
         }
 
-        consolidated_revenue = build_daily_revenue_message(
+        consolidated_hourly = build_telegram_message(
             prop="ALL",
-            report_date=datetime.strptime(TF, "%Y-%m-%d").strftime("%d/%m/%Y"),
             total_rooms=total_rooms_all,
             booked_rooms=booked_rooms_all,
             available_rooms=available_rooms_all,
             occupancy=occupancy_all,
-            total_amount=amounts_all["Total"],
-            cash=amounts_all["Cash"],
-            qr=amounts_all["QR"],
-            online=amounts_all["Online"],
-            discount=amounts_all["Discount"],
-            balance=amounts_all["Balance"],
+            inhouse=inhouse_all,
+            checkedout=checkedout_all,
+            upcoming=upcoming_all,
+            cancelled=cancelled_all,
+            counts=counts_all,
             amounts=amounts_all,
             arr=arr_all,
             app_arr=app_arr_all
         )
 
-        await send_telegram_message(consolidated_revenue, session=tg_session)
+        await send_telegram_message(consolidated_hourly, session=tg_session)
 
-    print("✅ ALL MONTHLY TELEGRAM REVENUE REPORTS SENT — GUARANTEED")
-    return
-
-
+    print("✅ ALL MONTHLY TELEGRAM REPORTS SENT — GUARANTEED")
 
 # ================= RUN =================
 if __name__ == "__main__":
@@ -816,5 +904,9 @@ if __name__ == "__main__":
         print(e)
         traceback.print_exc()
         print("SCRIPT CRASHED", e, flush=True)
+
+
+
+
 
 
