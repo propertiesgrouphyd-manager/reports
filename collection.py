@@ -410,11 +410,11 @@ DAILY COLLECTION REPORT : {prop}
 
 🔹 Total Guests Paid : {total_guests}
 
-🔹 Total Amount      : ₹{total_amount:,}
-🔹 Cash              : ₹{cash:,}
-🔹 QR                : ₹{qr:,}
-🔹 Online            : ₹{online:,}
-🔹 Discount          : ₹{discount:,}
+🔹 Total Amount      : ₹{total_amount:,.2f}
+🔹 Cash              : ₹{cash:,.2f}
+🔹 QR                : ₹{qr:,.2f}
+🔹 Online            : ₹{online:,.2f}
+🔹 Discount          : ₹{discount:,.2f}
 
 </pre>
 """.strip()
