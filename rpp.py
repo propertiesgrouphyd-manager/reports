@@ -40,7 +40,7 @@ PROPERTIES = {
 
 # ------------------- TELEGRAM ROUTING -------------------
 TELEGRAM_BOT_TOKEN = "8457091054:AAHNcJeIpf2-ugHbzaFoImlFuN5lxRbcC5Q"
-TELEGRAM_CHAT_ID = -5183854572
+TELEGRAM_CHAT_ID = -1003325096289
 TELEGRAM_SEND_LOCK = asyncio.Lock()
 
 # ------------------- UTILS -------------------
