@@ -423,7 +423,7 @@ async def main():
     TF = target_date.strftime("%Y-%m-%d")
     TT = TF
 
-    HF = (target_date - timedelta(days=120)).strftime("%Y-%m-%d")
+    HF = (target_date - timedelta(days=60)).strftime("%Y-%m-%d")
     HT = target_date.strftime("%Y-%m-%d")
 
     print("BUSINESS DATE :", TF)
