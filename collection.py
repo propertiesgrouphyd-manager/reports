@@ -418,7 +418,8 @@ async def main():
     global now
     now = datetime.now(IST)
 
-    target_date = (now - timedelta(days=1)).date()
+    target_date = now.date()
+
 
     TF = target_date.strftime("%Y-%m-%d")
     TT = TF
