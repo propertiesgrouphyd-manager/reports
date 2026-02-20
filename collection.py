@@ -62,9 +62,18 @@ async def send_telegram_message(text, session):
         "parse_mode": "HTML"
     }
 
-    async with session.post(url, json=payload, timeout=30) as resp:
-        if resp.status != 200:
-            raise RuntimeError("Telegram send failed")
+    try:
+        async with session.post(url, json=payload, timeout=30) as resp:
+            response_text = await resp.text()
+
+            if resp.status != 200:
+                print("❌ TELEGRAM ERROR:", resp.status, response_text)
+                return
+
+            print("✅ Telegram sent")
+
+    except Exception as e:
+        print("❌ TELEGRAM EXCEPTION:", e)
 
 # ================= BOOKING SOURCE =================
 def get_booking_source(b):
