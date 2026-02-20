@@ -328,7 +328,6 @@ async def process_property(P, TF, TT, HF, HT):
         if total_rooms == 0:
             raise RuntimeError("TOTAL ROOMS FETCH FAILED")
 
-        # NEW FEATURE: limit detail calls per property
         detail_semaphore = asyncio.Semaphore(DETAIL_PARALLEL_LIMIT)
 
         async def limited_detail_call(booking_no):
@@ -338,11 +337,6 @@ async def process_property(P, TF, TT, HF, HT):
         all_rows = []
         offset = 0
         upcoming_count = cancelled_count = inhouse_count = checkedout_count = 0
-
-        # ================= TARGET DATE COLLECTION (NOT DIVIDED) =================
-        target_collect_date = str(TF).strip()
-        today_collect = {"cash": 0.0, "qr": 0.0, "online": 0.0}
-        today_seen_bookings = set()
 
         while True:
             data = await fetch_bookings_batch(session, offset, HF, HT, P)
@@ -370,7 +364,7 @@ async def process_property(P, TF, TT, HF, HT):
                     co = datetime.strptime(b["checkout"], "%Y-%m-%d")
                     tf_date = datetime.strptime(TF, "%Y-%m-%d")
 
-                    # ---- STATUS COUNTS (UNCHANGED) ----
+                    # ---- STATUS COUNTS ----
                     if status == "Checked In":
                         if ci <= tf_date or ci == tf_date + timedelta(days=1):
                             inhouse_count += 1
@@ -389,7 +383,7 @@ async def process_property(P, TF, TT, HF, HT):
                         if ci == tf_date or ci == tf_date + timedelta(days=1):
                             cancelled_count += 1
 
-                    # ---------- ROW FILTER (UNCHANGED) ----------
+                    # ---------- ROW FILTER ----------
                     if status not in ["Checked In", "Checked Out"]:
                         continue
 
@@ -406,19 +400,9 @@ async def process_property(P, TF, TT, HF, HT):
 
                 for res, (b, target, ci, co) in zip(results, mapping):
                     if isinstance(res, Exception):
-                        # detail fail shouldn't kill property
                         continue
 
                     rooms, cash, qr, online, discount, balance = res
-
-                    # ================= TARGET DATE COLLECTION (NOT DIVIDED) =================
-                    # Collect only bookings whose CHECK-IN is exactly TF
-                    # Add once per booking_id (not repeated for each stay date)
-                    if str(b.get("checkin", "")).strip() == target_collect_date and b["booking_no"] not in today_seen_bookings:
-                        today_seen_bookings.add(b["booking_no"])
-                        today_collect["cash"] += float(cash or 0)
-                        today_collect["qr"] += float(qr or 0)
-                        today_collect["online"] += float(online or 0)
 
                     stay = max((co - ci).days, 1)
                     paid = float(b.get("get_amount_paid") or 0)
@@ -451,7 +435,6 @@ async def process_property(P, TF, TT, HF, HT):
 
         df = pd.DataFrame(all_rows)
 
-        # NEW FEATURE: DO NOT FAIL PROPERTY IF NO ROWS
         if df.empty:
             print(f"⚠️ NO ROWS → {P['name']} (month has no stays)")
             df = pd.DataFrame(columns=[
@@ -469,10 +452,8 @@ async def process_property(P, TF, TT, HF, HT):
             inhouse_count,
             checkedout_count,
             upcoming_count,
-            cancelled_count,
-            today_collect  # ✅ added for telegram today collection
+            cancelled_count
         )
-
 
 
 # ================= RELIABILITY WRAPPER =================
@@ -578,14 +559,10 @@ DAILY REVENUE REPORT : {prop}
 🔹 ARR               : ₹{arr}
 🔹 App ARR           : ₹{app_arr}
 
-✅ Today Collection
-🔸 Cash              : ₹{amounts['TodayCash']:,}
-🔸 QR                : ₹{amounts['TodayQR']:,}
-🔸 Online            : ₹{amounts['TodayOnline']:,}
-🔸 Total             : ₹{amounts['TodayTotal']:,}
 </pre>
 """.strip()
 
+# ================= MAIN =================
 # ================= MAIN =================
 async def main():
     print("========================================")
@@ -604,7 +581,6 @@ async def main():
     TT = TF
     HF = (target_date - timedelta(days=120)).strftime("%Y-%m-%d")
     HT = now.strftime("%Y-%m-%d")
-
 
     # ================= SMART RETRY (ONLY FAILED PROPERTIES) =================
     pending = {k: v for k, v in PROPERTIES.items()}
@@ -630,7 +606,6 @@ async def main():
 
             name, df, *_ = result
 
-            # strict verify (df always exists now; empty allowed as valid)
             if df is None:
                 print(f"❌ EMPTY DATA → {name}")
                 new_pending[key] = P
@@ -659,12 +634,12 @@ async def main():
     print("✅ DATA VERIFIED — ALL PROPERTIES PRESENT")
 
     async with aiohttp.ClientSession() as tg_session:
-        # ================= PER-PROPERTY MONTHLY REPORTS =================
-        for name, df, total_rooms, inhouse, checkedout, upcoming, cancelled, today_collect in valid_results:
+
+        # ================= PER-PROPERTY REPORTS =================
+        for name, df, total_rooms, inhouse, checkedout, upcoming, cancelled in valid_results:
 
             booked_rooms = int(df["Rooms"].sum()) if not df.empty else 0
 
-            # NEW FEATURE: total rooms multiplied by days
             booked_rooms = int(df["Rooms"].sum())
             available_rooms = total_rooms - booked_rooms
             occupancy = round((booked_rooms / total_rooms) * 100) if total_rooms else 0
@@ -694,17 +669,7 @@ async def main():
                 "QR": int(df["QR"].sum()) if not df.empty else 0,
                 "Online": int(df["Online"].sum()) if not df.empty else 0,
                 "Discount": int(df["Discount"].sum()) if not df.empty else 0,
-                "Balance": int(df["Balance"].sum()) if not df.empty else 0,
-
-                # ✅ NEW: TARGET DATE COLLECTION (NOT DIVIDED)
-                "TodayCash": int(today_collect.get("cash", 0)),
-                "TodayQR": int(today_collect.get("qr", 0)),
-                "TodayOnline": int(today_collect.get("online", 0)),
-                "TodayTotal": int(
-                    float(today_collect.get("cash", 0)) +
-                    float(today_collect.get("qr", 0)) +
-                    float(today_collect.get("online", 0))
-                )
+                "Balance": int(df["Balance"].sum()) if not df.empty else 0
             }
 
             revenue_message = build_daily_revenue_message(
@@ -728,8 +693,7 @@ async def main():
             await send_telegram_message(revenue_message, session=tg_session)
             await asyncio.sleep(1.5)
 
-
-        # ================= CONSOLIDATED MONTHLY REPORT =================
+        # ================= CONSOLIDATED REPORT =================
         all_df = pd.concat([r[1] for r in valid_results], ignore_index=True)
 
         total_rooms_all = sum(r[2] for r in valid_results)
@@ -740,7 +704,6 @@ async def main():
 
         booked_rooms_all = int(all_df["Rooms"].sum()) if not all_df.empty else 0
 
-        # NEW FEATURE: consolidated total rooms * month days
         booked_rooms_all = int(all_df["Rooms"].sum())
         available_rooms_all = total_rooms_all - booked_rooms_all
         occupancy_all = round((booked_rooms_all / total_rooms_all) * 100) if total_rooms_all else 0
@@ -755,31 +718,13 @@ async def main():
 
         counts_all = {k: count(all_df, k) for k in ["Walk-in","OYO","MMT","Agoda","CB","BDC","TA","OBA"]}
 
-        # ✅ NEW: CONSOLIDATED TARGET DATE COLLECTION (NOT DIVIDED)
-        consolidated_today_collect = {"cash": 0.0, "qr": 0.0, "online": 0.0}
-        for res in valid_results:
-            tc = res[-1]
-            consolidated_today_collect["cash"] += float(tc.get("cash", 0))
-            consolidated_today_collect["qr"] += float(tc.get("qr", 0))
-            consolidated_today_collect["online"] += float(tc.get("online", 0))
-
         amounts_all = {
             "Total": int(total_amount_all),
             "Cash": int(all_df["Cash"].sum()) if not all_df.empty else 0,
             "QR": int(all_df["QR"].sum()) if not all_df.empty else 0,
             "Online": int(all_df["Online"].sum()) if not all_df.empty else 0,
             "Discount": int(all_df["Discount"].sum()) if not all_df.empty else 0,
-            "Balance": int(all_df["Balance"].sum()) if not all_df.empty else 0,
-
-            # ✅ NEW: TARGET DATE COLLECTION (NOT DIVIDED)
-            "TodayCash": int(consolidated_today_collect.get("cash", 0)),
-            "TodayQR": int(consolidated_today_collect.get("qr", 0)),
-            "TodayOnline": int(consolidated_today_collect.get("online", 0)),
-            "TodayTotal": int(
-                float(consolidated_today_collect.get("cash", 0)) +
-                float(consolidated_today_collect.get("qr", 0)) +
-                float(consolidated_today_collect.get("online", 0))
-            )
+            "Balance": int(all_df["Balance"].sum()) if not all_df.empty else 0
         }
 
         consolidated_revenue = build_daily_revenue_message(
@@ -816,5 +761,4 @@ if __name__ == "__main__":
         print(e)
         traceback.print_exc()
         print("SCRIPT CRASHED", e, flush=True)
-
 
