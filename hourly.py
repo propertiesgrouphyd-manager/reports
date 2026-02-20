@@ -34,7 +34,7 @@ ROOMS_TIMEOUT = 25
 BATCH_TIMEOUT = 35
 
 TELEGRAM_BOT_TOKEN = "8457091054:AAHNcJeIpf2-ugHbzaFoImlFuN5lxRbcC5Q"
-TELEGRAM_CHAT_ID = -5151202618
+TELEGRAM_CHAT_ID = -1003575045570
 
 # ================= PROPERTIES =================
 PROPERTIES = {
@@ -904,6 +904,7 @@ if __name__ == "__main__":
         print(e)
         traceback.print_exc()
         print("SCRIPT CRASHED", e, flush=True)
+
 
 
 
