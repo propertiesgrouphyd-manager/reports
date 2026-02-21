@@ -5,6 +5,8 @@
 # FINAL EXCEL: ONLY PAID BOOKINGS (NO PER DAY STAY CALC)
 # ==============================
 
+import os
+import json
 import asyncio
 import aiohttp
 import pandas as pd
@@ -27,10 +29,35 @@ ROOMS_TIMEOUT = 25
 BATCH_TIMEOUT = 35
 
 
-from telegram_config import BOT_TOKEN, get_chat_id
 
-TELEGRAM_BOT_TOKEN = BOT_TOKEN
-TELEGRAM_CHAT_ID = get_chat_id("collection")
+# ================= TELEGRAM =================
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
+if not TELEGRAM_BOT_TOKEN:
+    raise RuntimeError("❌ TELEGRAM_BOT_TOKEN missing")
+
+
+CHAT_MAP = json.loads(os.getenv("TELEGRAM_CHAT_MAP", "{}"))
+
+def get_chat_id(name: str):
+    if name not in CHAT_MAP:
+        raise RuntimeError(f"❌ Chat ID not configured: {name}")
+    return int(CHAT_MAP[name])
+
+
+# choose chat key from secret map
+TELEGRAM_CHAT_ID = get_chat_id("collection")   # change if needed
+
+
+# ================= PROPERTIES =================
+
+PROPERTIES_RAW = json.loads(os.getenv("OYO_PROPERTIES", "{}"))
+
+PROPERTIES = {int(k): v for k, v in PROPERTIES_RAW.items()}
+
+if not PROPERTIES:
+    raise RuntimeError("❌ OYO_PROPERTIES secret missing or empty")
 
 
 async def send_telegram_message(text, session):
