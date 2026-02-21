@@ -1,10 +1,11 @@
+import os
+import json
 import asyncio
 import aiohttp
 from datetime import datetime, timedelta
 import traceback
 import random
 import pytz
-from telegram_config import BOT_TOKEN, get_chat_id, PROPERTIES
 IST = pytz.timezone("Asia/Kolkata")
 
 now = datetime.now(IST)
@@ -18,11 +19,36 @@ PROP_PARALLEL_LIMIT = 4
 API_TIMEOUT = 25
 prop_semaphore = asyncio.Semaphore(PROP_PARALLEL_LIMIT)
 
-# ------------------- PROPERTIES -------------------
-from telegram_config import BOT_TOKEN, get_chat_id
 
-TELEGRAM_BOT_TOKEN = BOT_TOKEN
-TELEGRAM_CHAT_ID = get_chat_id("rpp")
+# ================= TELEGRAM =================
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
+if not TELEGRAM_BOT_TOKEN:
+    raise RuntimeError("❌ TELEGRAM_BOT_TOKEN missing")
+
+
+CHAT_MAP = json.loads(os.getenv("TELEGRAM_CHAT_MAP", "{}"))
+
+def get_chat_id(name: str):
+    if name not in CHAT_MAP:
+        raise RuntimeError(f"❌ Chat ID not configured: {name}")
+    return int(CHAT_MAP[name])
+
+
+# choose chat key from secret map
+TELEGRAM_CHAT_ID = get_chat_id("rpp")   # change if needed
+
+
+# ================= PROPERTIES =================
+
+PROPERTIES_RAW = json.loads(os.getenv("OYO_PROPERTIES", "{}"))
+
+PROPERTIES = {int(k): v for k, v in PROPERTIES_RAW.items()}
+
+if not PROPERTIES:
+    raise RuntimeError("❌ OYO_PROPERTIES secret missing or empty")
+
 
 
 TELEGRAM_SEND_LOCK = asyncio.Lock()
