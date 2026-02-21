@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import traceback
 import random
 import pytz
-import PROPERTIES
+from telegram_config import BOT_TOKEN, get_chat_id, PROPERTIES
 IST = pytz.timezone("Asia/Kolkata")
 
 now = datetime.now(IST)
