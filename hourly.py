@@ -51,7 +51,7 @@ def get_chat_id(name: str):
 
 
 # choose chat key from secret map
-TELEGRAM_CHAT_ID = get_chat_id("rpp")   # change if needed
+TELEGRAM_CHAT_ID = get_chat_id("hourly")   # change if needed
 
 
 # ================= PROPERTIES =================
@@ -911,6 +911,7 @@ if __name__ == "__main__":
         print(e)
         traceback.print_exc()
         print("SCRIPT CRASHED", e, flush=True)
+
 
 
 
