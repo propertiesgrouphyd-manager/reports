@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import traceback
 import random
 import pytz
+import PROPERTIES
 IST = pytz.timezone("Asia/Kolkata")
 
 now = datetime.now(IST)
