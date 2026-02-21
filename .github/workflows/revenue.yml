@@ -1,13 +1,16 @@
 name: Revenue Reports Automation
 
 on:
-  schedule:
-    - cron: "0 * * * *"     # Runs every hour (UTC)
   workflow_dispatch:        # Manual trigger button in GitHub UI
 
 jobs:
   run:
     runs-on: ubuntu-latest
+
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_MAP: ${{ secrets.TELEGRAM_CHAT_MAP }}
+      OYO_PROPERTIES: ${{ secrets.OYO_PROPERTIES }}
 
     steps:
       - name: Checkout code
