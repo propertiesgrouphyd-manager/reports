@@ -4,6 +4,7 @@
 # BEAUTIFUL PREMIUM EXCEL
 # ==============================
 
+import os
 import asyncio
 import aiohttp
 import pandas as pd
@@ -911,6 +912,7 @@ if __name__ == "__main__":
         print(e)
         traceback.print_exc()
         print("SCRIPT CRASHED", e, flush=True)
+
 
 
 
