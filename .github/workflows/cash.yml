@@ -1,4 +1,4 @@
-name: 6AM Reports Automation
+name: Cash Reports Automation
 
 on:
   workflow_dispatch:        # Manual trigger button in GitHub UI
