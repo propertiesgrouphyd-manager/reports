@@ -344,6 +344,8 @@ async def main():
 
     print("TARGET DATE :", TF)
 
+    display_date = datetime.strptime(TF, "%Y-%m-%d").strftime("%d-%m-%Y")
+
     pending = {k: v for k, v in PROPERTIES.items()}
     success_results = {}
 
@@ -423,7 +425,7 @@ async def main():
             cash = round(hourly_cash.get(h, 0), 2)
             total += cash
 
-            ws.append([TF, hour_label(h), cash])
+            ws.append([display_date, hour_label(h), cash])
 
             row = ws.max_row
             fill_color = get_hour_color(h)
@@ -458,6 +460,8 @@ async def main():
         chart.height = 12
         chart.width = 26
         chart.style = 10
+
+        chart.legend = None
 
         data = Reference(ws, min_col=3, min_row=1, max_row=25)
         cats = Reference(ws, min_col=2, min_row=2, max_row=25)
@@ -505,7 +509,7 @@ async def main():
 
     await send_telegram_excel_buffer(
         buffer,
-        filename=f"Cash_Collection_{TF}.xlsx",
+        filename=f"Cash_Collection_{display_date}.xlsx",
         caption="📊 Hourly Cash Report"
     )
 
@@ -520,3 +524,4 @@ if __name__ == "__main__":
     except Exception as e:
         print("SCRIPT CRASHED")
         traceback.print_exc()
+
