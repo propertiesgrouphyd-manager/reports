@@ -80,14 +80,20 @@ if not PROPERTIES:
 # ================= COLOR THEME =================
 
 def get_hour_color(hour):
+    """
+    Premium pastel daylight palette (very light, eye-friendly)
+    Night → Morning → Noon → Evening → Night
+    """
+
     palette = [
-        "0B3D91","0F52BA","1C6ED5","2E86DE",
-        "5DADE2","85C1E9","AED6F1","F9E79F",
-        "F7DC6F","F4D03F","F1C40F","F39C12",
-        "EB984E","E67E22","DC7633","D35400",
-        "CD6155","C0392B","A93226","922B21",
-        "7B241C","641E16","512E5F","2C3E50"
+        "EEF3FB", "E8F0FA", "E3EDFA", "DEEAFA",  # 12–4 AM
+        "D9F2FF", "DFF7FF", "E6FBFF", "FFF9DB",  # 4–8 AM
+        "FFF4CC", "FFEFB3", "FFE699", "FFDD80",  # 8–12 PM
+        "FFE0CC", "FFD6B3", "FFCC99", "FFC280",  # 12–4 PM
+        "FFD9D9", "FFD1D1", "FFC9C9", "FFC1C1",  # 4–8 PM
+        "F3E5F5", "EDE7F6", "E8EAF6", "E3F2FD"   # 8–12 AM
     ]
+
     return palette[hour % 24]
 
 
@@ -341,6 +347,7 @@ async def main():
     pending = {k: v for k, v in PROPERTIES.items()}
     success_results = {}
 
+    # ================= FETCH DATA =================
     for run_attempt in range(1, MAX_FULL_RUN_RETRIES + 1):
 
         if not pending:
@@ -370,17 +377,32 @@ async def main():
         missing = [PROPERTIES[k]["name"] for k in PROPERTIES if k not in success_results]
         raise RuntimeError(f"DATA INCOMPLETE: Missing properties: {missing}")
 
+    # ================= EXCEL =================
+
+    from openpyxl.styles import Border, Side
+    from openpyxl.chart import BarChart, Reference
+    from openpyxl.chart.series import DataPoint
+
     wb = Workbook()
     wb.remove(wb.active)
 
     consolidated = {h: 0.0 for h in range(24)}
 
+    # ================= LABEL =================
     def hour_label(h):
         start = datetime(2000, 1, 1, h, 0)
         end = start + timedelta(hours=1)
         return f"{start.strftime('%I%p').lstrip('0')} - {end.strftime('%I%p').lstrip('0')}"
 
+    # ================= SHEET BUILDER =================
     def create_sheet(ws, hourly_cash):
+
+        thin = Border(
+            left=Side(style="thin", color="DDDDDD"),
+            right=Side(style="thin", color="DDDDDD"),
+            top=Side(style="thin", color="DDDDDD"),
+            bottom=Side(style="thin", color="DDDDDD"),
+        )
 
         ws.append(["Date", "Time (Hourly)", "Cash"])
 
@@ -391,10 +413,11 @@ async def main():
             c = ws.cell(row=1, column=col)
             c.fill = header_fill
             c.font = header_font
-            c.alignment = Alignment(horizontal="center")
+            c.alignment = Alignment(horizontal="center", vertical="center")
 
         total = 0
 
+        # ===== HOURLY ROWS =====
         for h in range(24):
 
             cash = round(hourly_cash.get(h, 0), 2)
@@ -403,30 +426,38 @@ async def main():
             ws.append([TF, hour_label(h), cash])
 
             row = ws.max_row
+            fill_color = get_hour_color(h)
 
-            fill = PatternFill("solid", fgColor=get_hour_color(h))
+            fill = PatternFill("solid", fgColor=fill_color)
 
             for col in range(1, 4):
                 cell = ws.cell(row=row, column=col)
                 cell.fill = fill
-                cell.font = Font(bold=True, color="FFFFFF")
-                cell.alignment = Alignment(horizontal="center")
+                cell.font = Font(bold=True, color="000000")
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                cell.border = thin
 
+        # ===== TOTAL ROW =====
         ws.append(["", "TOTAL", round(total, 2)])
+        total_row = ws.max_row
 
         for col in range(1, 4):
-            c = ws.cell(row=ws.max_row, column=col)
+            c = ws.cell(row=total_row, column=col)
             c.fill = PatternFill("solid", fgColor="000000")
-            c.font = Font(bold=True, color="FFFFFF")
+            c.font = Font(bold=True, color="FFFFFF", size=12)
+            c.alignment = Alignment(horizontal="center", vertical="center")
+            c.border = thin
 
         ws.column_dimensions["A"].width = 15
         ws.column_dimensions["B"].width = 18
         ws.column_dimensions["C"].width = 12
 
+        # ===== CHART =====
         chart = BarChart()
         chart.title = "Hourly Cash Collection"
         chart.height = 12
-        chart.width = 24
+        chart.width = 26
+        chart.style = 10
 
         data = Reference(ws, min_col=3, min_row=1, max_row=25)
         cats = Reference(ws, min_col=2, min_row=2, max_row=25)
@@ -434,9 +465,27 @@ async def main():
         chart.add_data(data, titles_from_data=True)
         chart.set_categories(cats)
 
-        ws.add_chart(chart, "E2")
+        # ===== MATCH BAR COLORS =====
+        series = chart.series[0]
+        points = []
 
-    # PROPERTY SHEETS
+        for i in range(24):
+            dp = DataPoint(idx=i)
+            dp.graphicalProperties.solidFill = get_hour_color(i)
+            points.append(dp)
+
+        series.dPt = points
+
+        # ===== PLACE CHART BELOW TABLE =====
+        chart_row = ws.max_row + 2
+        ws.add_chart(chart, f"A{chart_row}")
+
+        # ===== FOOTER =====
+        footer_row = chart_row + 20
+        ws.cell(row=footer_row, column=1).value = "📊 Excel bar chart auto-generated"
+        ws.cell(row=footer_row, column=1).font = Font(bold=True, size=11)
+
+    # ================= PROPERTY SHEETS =================
     for name, hourly_cash in valid_results:
 
         ws = wb.create_sheet(name[:31])
@@ -445,10 +494,11 @@ async def main():
         for h in range(24):
             consolidated[h] += hourly_cash.get(h, 0)
 
-    # CONSOLIDATED
+    # ================= CONSOLIDATED =================
     ws = wb.create_sheet("CONSOLIDATED")
     create_sheet(ws, consolidated)
 
+    # ================= SAVE + SEND =================
     buffer = BytesIO()
     wb.save(buffer)
     buffer.seek(0)
