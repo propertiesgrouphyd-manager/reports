@@ -1,7 +1,7 @@
 # ==============================
 # ULTRA FAST ASYNC MULTI PROPERTY AUTOMATION
 # HOURLY COLLECTION REPORT (CASH + QR + ONLINE + TOTAL)
-# PREMIUM FORMAT FIXED
+# PREMIUM FORMAT — FINAL FIXED
 # ==============================
 
 import os
@@ -17,15 +17,13 @@ from openpyxl.chart.series import DataPoint
 from io import BytesIO
 import pytz
 
+
 IST = pytz.timezone("Asia/Kolkata")
-now = datetime.now(IST)
 
 MAX_FULL_RUN_RETRIES = 5
 FULL_RUN_RETRY_DELAY = 10
 
 PROP_PARALLEL_LIMIT = 3
-DETAIL_PARALLEL_LIMIT = 10
-
 prop_semaphore = asyncio.Semaphore(PROP_PARALLEL_LIMIT)
 
 DETAIL_TIMEOUT = 25
@@ -72,7 +70,7 @@ PROPERTIES_RAW = json.loads(os.getenv("OYO_PROPERTIES", "{}"))
 PROPERTIES = {int(k): v for k, v in PROPERTIES_RAW.items()}
 
 
-# ================= COLOR THEME =================
+# ================= COLORS =================
 
 def get_hour_color(hour):
 
@@ -88,7 +86,7 @@ def get_hour_color(hour):
     return palette[hour % 24]
 
 
-# ================= FETCH DETAILS =================
+# ================= FETCH =================
 
 async def fetch_booking_details(session, P, booking_no):
 
@@ -169,8 +167,6 @@ async def fetch_booking_details(session, P, booking_no):
 
         return events
 
-
-# ================= BATCH FETCH =================
 
 async def fetch_bookings_batch(session, offset, f, t, P):
 
@@ -267,31 +263,18 @@ async def process_property(P, TF, TT, HF, HT):
         return (P["name"], hourly)
 
 
-# ================= RETRY =================
-
-async def run_property_with_retry(P, TF, TT, HF, HT, retries=3):
-
-    for _ in range(retries):
-        try:
-            return await process_property(P, TF, TT, HF, HT)
-        except:
-            await asyncio.sleep(2)
-
-    raise RuntimeError("PROPERTY FAILED")
-
+# ================= RUN WRAPPERS =================
 
 async def run_property_limited(P, TF, TT, HF, HT):
     async with prop_semaphore:
-        return await run_property_with_retry(P, TF, TT, HF, HT)
+        return await process_property(P, TF, TT, HF, HT)
 
 
 # ================= MAIN =================
 
 async def main():
 
-    global now
     now = datetime.now(IST)
-
     target_date = (now - timedelta(days=1)).date()
 
     TF = target_date.strftime("%Y-%m-%d")
@@ -302,29 +285,16 @@ async def main():
 
     display_date = target_date.strftime("%d-%m-%Y")
 
-    pending = {k:v for k,v in PROPERTIES.items()}
-    success = {}
+    # ===== FETCH ALL PROPERTIES =====
 
-    for _ in range(MAX_FULL_RUN_RETRIES):
+    tasks = [
+        run_property_limited(P, TF, TT, HF, HT)
+        for P in PROPERTIES.values()
+    ]
 
-        if not pending:
-            break
+    results = await asyncio.gather(*tasks)
 
-        tasks = [run_property_limited(P, TF, TT, HF, HT) for P in pending.values()]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        new_pending = {}
-
-        for key,(P,res) in zip(list(pending.keys()), zip(pending.values(), results)):
-            if isinstance(res, Exception):
-                new_pending[key] = P
-            else:
-                success[key] = res
-
-        pending = new_pending
-
-
-    results = [success[k] for k in PROPERTIES if k in success]
+    # ===== EXCEL =====
 
     wb = Workbook()
     wb.remove(wb.active)
@@ -351,7 +321,6 @@ async def main():
         )
 
         headers = ["Date","Time (Hourly)","Cash","QR","Online","Total"]
-
         ws.append(headers)
 
         header_fill = PatternFill("solid", fgColor="1F4E78")
@@ -371,19 +340,23 @@ async def main():
 
         for h in range(24):
 
-            data = hourly[h]
+            d = hourly[h]
 
-            cash = round(data["cash"],2)
-            qr = round(data["qr"],2)
-            online = round(data["online"],2)
-            total = round(data["total"],2)
+            row_vals = [
+                display_date,
+                hour_label(h),
+                round(d["cash"],2),
+                round(d["qr"],2),
+                round(d["online"],2),
+                round(d["total"],2)
+            ]
 
-            totals["cash"] += cash
-            totals["qr"] += qr
-            totals["online"] += online
-            totals["total"] += total
+            totals["cash"] += row_vals[2]
+            totals["qr"] += row_vals[3]
+            totals["online"] += row_vals[4]
+            totals["total"] += row_vals[5]
 
-            ws.append([display_date,hour_label(h),cash,qr,online,total])
+            ws.append(row_vals)
 
             r = ws.max_row
             fill = PatternFill("solid", fgColor=get_hour_color(h))
@@ -402,10 +375,10 @@ async def main():
                    totals["online"],
                    totals["total"]])
 
-        total_row = ws.max_row
+        tr = ws.max_row
 
         for c in range(1,7):
-            cell = ws.cell(row=total_row,column=c)
+            cell = ws.cell(row=tr,column=c)
             cell.fill = PatternFill("solid", fgColor="000000")
             cell.font = Font(bold=True,color="FFFFFF")
             cell.alignment = Alignment(horizontal="center")
@@ -417,7 +390,7 @@ async def main():
 
             chart = BarChart()
             chart.title = title
-            chart.height = 10
+            chart.height = 12
             chart.width = 26
             chart.legend = None
 
@@ -439,10 +412,10 @@ async def main():
 
             ws.add_chart(chart,f"A{start}")
 
-            return start+15
+            return start + 22   # BIG SPACE FIX
 
 
-        chart_row = ws.max_row + 2
+        chart_row = ws.max_row + 3
 
         chart_row = add_chart("Cash Collection",3,chart_row)
         chart_row = add_chart("QR Collection",4,chart_row)
@@ -454,7 +427,8 @@ async def main():
         ws.cell(row=footer,column=1).font = Font(bold=True)
 
 
-    # property sheets
+    # ===== PROPERTY SHEETS =====
+
     for name, hourly in results:
 
         ws = wb.create_sheet(name[:31])
@@ -466,6 +440,8 @@ async def main():
             consolidated[h]["online"] += hourly[h]["online"]
             consolidated[h]["total"] += hourly[h]["total"]
 
+
+    # ===== CONSOLIDATED =====
 
     ws = wb.create_sheet("CONSOLIDATED")
     create_sheet(ws, consolidated)
