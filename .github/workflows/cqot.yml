@@ -1,4 +1,4 @@
-name: Cash Reports Automation
+name: cqot Reports Automation
 
 on:
   workflow_dispatch:        # Manual trigger button in GitHub UI
