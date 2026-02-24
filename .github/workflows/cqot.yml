@@ -1,4 +1,4 @@
-name: cqot Reports Automation
+name: CQOT Reports Automation
 
 on:
   workflow_dispatch:        # Manual trigger button in GitHub UI
