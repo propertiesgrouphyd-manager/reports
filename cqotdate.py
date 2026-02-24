@@ -314,17 +314,33 @@ async def process_property(P, TF, TT, HF, HT, date_list):
 # ================= MAIN =================
 
 async def main():
+    print("========================================")
+    print(" OYO MONTHLY TELEGRAM AUTOMATION")
+    print("========================================")
 
-    today = datetime.now(IST).date()
-    month_start = today.replace(day=1)
+    global now
+    now = datetime.now(IST)
 
-    TF = month_start.strftime("%Y-%m-%d")
-    TT = today.strftime("%Y-%m-%d")
 
-    HF = (month_start - timedelta(days=30)).strftime("%Y-%m-%d")
-    HT = TT
+    # ================= BUSINESS DATE CUTOVER (12 PM RULE) =================
+    # ================= ALWAYS YESTERDAY =================
+    target_date = (now - timedelta(days=1)).date()
 
-    display_month = today.strftime("%B %Y")
+
+    # ================= PREVIOUS MONTH (BASED ON TARGET_DATE) =================
+    # ================= CURRENT MONTH TO YESTERDAY =================
+    TF = target_date.replace(day=1).strftime("%Y-%m-%d")
+    TT = target_date.strftime("%Y-%m-%d")
+
+    # NEW FEATURE: total days in range
+    target_days = (datetime.strptime(TT, "%Y-%m-%d") - datetime.strptime(TF, "%Y-%m-%d")).days + 1
+
+
+    # ================= HISTORY RANGE (120 DAYS BEFORE → TARGET_DATE) =================
+    HF = (target_date - timedelta(days=120)).strftime("%Y-%m-%d")
+    HT = target_date.strftime("%Y-%m-%d")
+    
+    MONTH_LABEL = datetime.strptime(TF, "%Y-%m-%d").strftime("%B %Y")
 
     date_list = []
     d = month_start
@@ -525,7 +541,7 @@ async def main():
 
     await send_telegram_excel_buffer(
         buffer,
-        filename=f"Collection_Datewise_{display_month}.xlsx",
+        filename=f"Collection_Datewise_{MONTH_LABEL}.xlsx",
         caption="📊 Date-wise Collection Report"
     )
 
