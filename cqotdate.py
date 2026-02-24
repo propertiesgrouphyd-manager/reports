@@ -321,6 +321,9 @@ async def main():
     global now
     now = datetime.now(IST)
 
+    today = datetime.now(IST).date()
+    month_start = today.replace(day=1)
+
 
     # ================= BUSINESS DATE CUTOVER (12 PM RULE) =================
     # ================= ALWAYS YESTERDAY =================
