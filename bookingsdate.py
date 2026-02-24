@@ -219,7 +219,7 @@ async def main():
     TF = month_start.strftime("%Y-%m-%d")
     TT = today.strftime("%Y-%m-%d")
 
-    HF = (target_date - timedelta(days=30)).strftime("%Y-%m-%d")
+    HF = (TF - timedelta(days=30)).strftime("%Y-%m-%d")
     HT = TF
     
 
