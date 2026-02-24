@@ -2,8 +2,8 @@
 # ULTRA FAST ASYNC MULTI PROPERTY AUTOMATION
 # DATE-WISE COLLECTION REPORT (CASH + QR + ONLINE + TOTAL)
 # MONTH START → TODAY
-# WITH PROPERTY RANKING
-# FINAL FIXED VERSION
+# WITH PROPERTY RANKING + BAR CHARTS
+# SAME ENGINE AS WORKING CASH SCRIPT
 # ==============================
 
 import os
@@ -26,6 +26,8 @@ MAX_FULL_RUN_RETRIES = 5
 FULL_RUN_RETRY_DELAY = 10
 
 PROP_PARALLEL_LIMIT = 3
+DETAIL_PARALLEL_LIMIT = 10
+
 prop_semaphore = asyncio.Semaphore(PROP_PARALLEL_LIMIT)
 
 DETAIL_TIMEOUT = 25
@@ -106,64 +108,73 @@ async def fetch_booking_details(session, P, booking_no):
 
     headers = {
         "accept": "application/json",
+        "content-type": "application/json",
         "x-qid": str(P["QID"]),
         "x-source-client": "merchant"
     }
 
-    async with session.get(
-        url,
-        params=params,
-        headers=headers,
-        cookies=cookies,
-        timeout=DETAIL_TIMEOUT
-    ) as r:
+    for attempt in range(1, 4):
 
-        if r.status != 200:
-            return []
+        try:
+            async with session.get(
+                url,
+                params=params,
+                headers=headers,
+                cookies=cookies,
+                timeout=DETAIL_TIMEOUT
+            ) as r:
 
-        data = await r.json()
+                if r.status != 200:
+                    raise RuntimeError("DETAIL FAIL")
 
-        booking = next(
-            iter(data.get("entities", {}).get("bookings", {}).values()),
-            {}
-        )
+                data = await r.json()
 
-        payments = booking.get("payments", [])
+                booking = next(
+                    iter(data.get("entities", {}).get("bookings", {}).values()),
+                    {}
+                )
 
-        events = []
+                payments = booking.get("payments", [])
 
-        for p in payments:
+                events = []
 
-            amt = float(p.get("amount", 0) or 0)
-            if amt <= 0:
-                continue
+                for p in payments:
 
-            created_at = str(p.get("created_at") or "")
-            if not created_at:
-                continue
+                    amt = float(p.get("amount", 0) or 0)
+                    if amt <= 0:
+                        continue
 
-            try:
-                dt = datetime.fromisoformat(created_at.replace("Z", ""))
-                dt = dt.astimezone(IST)
-            except:
-                continue
+                    created_at = str(p.get("created_at") or "").strip()
+                    if not created_at:
+                        continue
 
-            mode_raw = p.get("mode", "")
+                    try:
+                        dt = datetime.fromisoformat(created_at.replace("Z", ""))
+                        dt = dt.astimezone(IST)
+                    except Exception:
+                        continue
 
-            if mode_raw == "Cash at Hotel":
-                bucket = "cash"
-            elif mode_raw == "UPI QR":
-                bucket = "qr"
-            else:
-                bucket = "online"
+                    mode_raw = p.get("mode", "")
 
-            events.append({
-                "date": dt.date(),
-                "mode": bucket,
-                "amt": amt
-            })
+                    if mode_raw == "Cash at Hotel":
+                        bucket = "cash"
+                    elif mode_raw == "UPI QR":
+                        bucket = "qr"
+                    else:
+                        bucket = "online"
 
-        return events
+                    events.append({
+                        "date": dt.strftime("%Y-%m-%d"),
+                        "mode": bucket,
+                        "amt": amt
+                    })
+
+                return events
+
+        except Exception:
+            await asyncio.sleep(2 + attempt)
+
+    return []
 
 
 # ================= FETCH BOOKINGS =================
@@ -177,13 +188,19 @@ async def fetch_bookings_batch(session, offset, f, t, P):
         "checkin_from": f,
         "checkin_till": t,
         "batch_count": 100,
-        "batch_offset": offset
+        "batch_offset": offset,
+        "visibility_required": "true",
+        "additionalParams": "payment_hold_transaction,guest,stay_details",
+        "decimal_price": "true",
+        "ascending": "true",
+        "sort_on": "checkin_date"
     }
 
     cookies = {"uif": P["UIF"], "uuid": P["UUID"]}
 
     headers = {
         "accept": "application/json",
+        "content-type": "application/json",
         "x-qid": str(P["QID"]),
         "x-source-client": "merchant"
     }
@@ -197,62 +214,101 @@ async def fetch_bookings_batch(session, offset, f, t, P):
     ) as r:
 
         if r.status != 200:
-            return {}
+            raise RuntimeError("BATCH FAIL")
 
         return await r.json()
 
 
 # ================= PROCESS PROPERTY =================
 
-async def process_property(P, TF, TT, date_list):
+async def process_property(P, TF, TT, HF, HT, date_list):
 
-    date_map = {
-        d: {"cash":0,"qr":0,"online":0,"total":0}
-        for d in date_list
-    }
+    print(f"PROCESSING → {P['name']}")
+
+    tf_dt = datetime.strptime(TF, "%Y-%m-%d").date()
+    tt_dt = datetime.strptime(TT, "%Y-%m-%d").date()
 
     async with aiohttp.ClientSession() as session:
+
+        detail_semaphore = asyncio.Semaphore(DETAIL_PARALLEL_LIMIT)
+        detail_cache = {}
+
+        async def limited_detail_call(booking_no):
+            async with detail_semaphore:
+                if booking_no in detail_cache:
+                    return detail_cache[booking_no]
+                res = await fetch_booking_details(session, P, booking_no)
+                detail_cache[booking_no] = res
+                return res
+
+        date_map = {
+            d: {"cash":0.0,"qr":0.0,"online":0.0,"total":0.0}
+            for d in date_list
+        }
 
         offset = 0
 
         while True:
 
-            data = await fetch_bookings_batch(session, offset, TF, TT, P)
+            data = await fetch_bookings_batch(session, offset, HF, HT, P)
 
             if not data or not data.get("bookingIds"):
                 break
 
             bookings = data.get("entities", {}).get("bookings", {})
 
+            tasks = []
+
             for b in bookings.values():
 
-                if b.get("status") not in ["Checked In","Checked Out"]:
+                status = (b.get("status") or "").strip()
+                if status not in ["Checked In", "Checked Out"]:
                     continue
 
                 booking_no = b.get("booking_no")
                 if not booking_no:
                     continue
 
-                details = await fetch_booking_details(session, P, booking_no)
+                tasks.append(limited_detail_call(booking_no))
 
-                for ev in details:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
 
-                    d = ev["date"]
-                    if d not in date_map:
+            for res in results:
+
+                if isinstance(res, Exception):
+                    continue
+
+                for ev in res or []:
+
+                    try:
+                        d_dt = datetime.strptime(ev["date"], "%Y-%m-%d").date()
+                    except:
                         continue
 
-                    mode = ev["mode"]
-                    amt = float(ev["amt"])
+                    if not (tf_dt <= d_dt <= tt_dt):
+                        continue
 
-                    date_map[d][mode] += amt
-                    date_map[d]["total"] += amt
+                    if d_dt not in date_map:
+                        continue
+
+                    amt = float(ev["amt"])
+                    mode = ev["mode"]
+
+                    if mode == "cash":
+                        date_map[d_dt]["cash"] += amt
+                    elif mode == "qr":
+                        date_map[d_dt]["qr"] += amt
+                    else:
+                        date_map[d_dt]["online"] += amt
+
+                    date_map[d_dt]["total"] += amt
 
             if len(data.get("bookingIds", [])) < 100:
                 break
 
             offset += 100
 
-    return (P["name"], date_map)
+        return (P["name"], date_map)
 
 
 # ================= MAIN =================
@@ -265,29 +321,25 @@ async def main():
     TF = month_start.strftime("%Y-%m-%d")
     TT = today.strftime("%Y-%m-%d")
 
+    HF = (month_start - timedelta(days=30)).strftime("%Y-%m-%d")
+    HT = TT
+
     display_month = today.strftime("%B %Y")
 
-    # date list
     date_list = []
     d = month_start
     while d <= today:
         date_list.append(d)
         d += timedelta(days=1)
 
-    # ================= FETCH =================
-
     tasks = [
-        process_property(P, TF, TT, date_list)
+        process_property(P, TF, TT, HF, HT, date_list)
         for P in PROPERTIES.values()
     ]
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    valid_results = []
-    for r in results:
-        if isinstance(r, Exception):
-            continue
-        valid_results.append(r)
+    valid_results = [r for r in results if not isinstance(r, Exception)]
 
     # ================= EXCEL =================
 
@@ -369,7 +421,39 @@ async def main():
             cell.font = Font(bold=True,color="FFFFFF")
             cell.alignment = Alignment(horizontal="center")
 
-    # ================= PROPERTY SHEETS =================
+        # ===== CHARTS =====
+
+        start_row = ws.max_row + 3
+
+        titles = ["Cash","QR","Online","Total"]
+
+        for i,col in enumerate(range(2,6)):
+
+            chart = BarChart()
+            chart.height = 12
+            chart.width = 26
+            chart.title = titles[i]
+            chart.legend = None
+
+            data = Reference(ws, min_col=col, min_row=1, max_row=len(date_list)+1)
+            cats = Reference(ws, min_col=1, min_row=2, max_row=len(date_list)+1)
+
+            chart.add_data(data, titles_from_data=True)
+            chart.set_categories(cats)
+
+            series = chart.series[0]
+            pts = []
+
+            for idx in range(len(date_list)):
+                dp = DataPoint(idx=idx)
+                dp.graphicalProperties.solidFill = get_row_color(idx)
+                pts.append(dp)
+
+            series.dPt = pts
+
+            ws.add_chart(chart, f"A{start_row + i*22}")
+
+    # ===== PROPERTY SHEETS =====
 
     for name, data in valid_results:
 
@@ -393,12 +477,12 @@ async def main():
             **totals
         })
 
-    # ================= CONSOLIDATED =================
+    # ===== CONSOLIDATED =====
 
     ws = wb.create_sheet("CONSOLIDATED")
     create_sheet(ws, consolidated)
 
-    # ================= PROPERTY RANKING =================
+    # ===== PROPERTY RANKING =====
 
     ws = wb.create_sheet("PROPERTY RANKING")
 
@@ -413,7 +497,7 @@ async def main():
         c.font = Font(bold=True,color="FFFFFF")
         c.alignment = Alignment(horizontal="center")
 
-    widths = [8,25,12,12,12,14]
+    widths = [8,28,12,12,12,14]
     for i,w in enumerate(widths,start=1):
         ws.column_dimensions[chr(64+i)].width = w
 
@@ -431,16 +515,9 @@ async def main():
             round(p["total"],2)
         ])
 
-        r = ws.max_row
-
-        for c in range(1,7):
-            cell = ws.cell(row=r,column=c)
-            cell.border = thin
-            cell.alignment = Alignment(horizontal="center")
-
         rank += 1
 
-    # ================= SAVE =================
+    # ===== SAVE =====
 
     buffer = BytesIO()
     wb.save(buffer)
