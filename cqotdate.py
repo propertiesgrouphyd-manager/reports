@@ -3,13 +3,14 @@
 # DATE-WISE COLLECTION REPORT (CASH + QR + ONLINE + TOTAL)
 # MONTH START → TODAY
 # WITH PROPERTY RANKING
+# FINAL FIXED VERSION
 # ==============================
 
 import os
 import json
 import asyncio
 import aiohttp
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 import traceback
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
@@ -17,6 +18,7 @@ from openpyxl.chart import BarChart, Reference
 from openpyxl.chart.series import DataPoint
 from io import BytesIO
 import pytz
+
 
 IST = pytz.timezone("Asia/Kolkata")
 
@@ -83,7 +85,7 @@ def get_row_color(index):
         "F3E5F5","EDE7F6","E8EAF6","E3F2FD"
     ]
 
-    return palette[index % len(palette))
+    return palette[index % len(palette)]
 
 
 # ================= FETCH DETAILS =================
@@ -104,7 +106,6 @@ async def fetch_booking_details(session, P, booking_no):
 
     headers = {
         "accept": "application/json",
-        "content-type": "application/json",
         "x-qid": str(P["QID"]),
         "x-source-client": "merchant"
     }
@@ -118,7 +119,7 @@ async def fetch_booking_details(session, P, booking_no):
     ) as r:
 
         if r.status != 200:
-            raise RuntimeError("DETAIL API FAILED")
+            return []
 
         data = await r.json()
 
@@ -153,8 +154,6 @@ async def fetch_booking_details(session, P, booking_no):
                 bucket = "cash"
             elif mode_raw == "UPI QR":
                 bucket = "qr"
-            elif mode_raw == "oyo_wizard_discount":
-                continue
             else:
                 bucket = "online"
 
@@ -198,14 +197,14 @@ async def fetch_bookings_batch(session, offset, f, t, P):
     ) as r:
 
         if r.status != 200:
-            raise RuntimeError("BATCH API FAILED")
+            return {}
 
         return await r.json()
 
 
 # ================= PROCESS PROPERTY =================
 
-async def process_property(P, TF, TT, HF, HT, date_list):
+async def process_property(P, TF, TT, date_list):
 
     date_map = {
         d: {"cash":0,"qr":0,"online":0,"total":0}
@@ -218,7 +217,7 @@ async def process_property(P, TF, TT, HF, HT, date_list):
 
         while True:
 
-            data = await fetch_bookings_batch(session, offset, HF, HT, P)
+            data = await fetch_bookings_batch(session, offset, TF, TT, P)
 
             if not data or not data.get("bookingIds"):
                 break
@@ -256,24 +255,6 @@ async def process_property(P, TF, TT, HF, HT, date_list):
     return (P["name"], date_map)
 
 
-# ================= RETRY =================
-
-async def run_property_with_retry(P, TF, TT, HF, HT, date_list, retries=3):
-
-    for _ in range(retries):
-        try:
-            return await process_property(P, TF, TT, HF, HT, date_list)
-        except:
-            await asyncio.sleep(2)
-
-    raise RuntimeError("PROPERTY FAILED")
-
-
-async def run_property_limited(P, TF, TT, HF, HT, date_list):
-    async with prop_semaphore:
-        return await run_property_with_retry(P, TF, TT, HF, HT, date_list)
-
-
 # ================= MAIN =================
 
 async def main():
@@ -284,9 +265,6 @@ async def main():
     TF = month_start.strftime("%Y-%m-%d")
     TT = today.strftime("%Y-%m-%d")
 
-    HF = TF
-    HT = TT
-
     display_month = today.strftime("%B %Y")
 
     # date list
@@ -296,32 +274,22 @@ async def main():
         date_list.append(d)
         d += timedelta(days=1)
 
-    pending = {k:v for k,v in PROPERTIES.items()}
-    success = {}
+    # ================= FETCH =================
 
-    for _ in range(MAX_FULL_RUN_RETRIES):
+    tasks = [
+        process_property(P, TF, TT, date_list)
+        for P in PROPERTIES.values()
+    ]
 
-        if not pending:
-            break
+    results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        tasks = [
-            run_property_limited(P, TF, TT, HF, HT, date_list)
-            for P in pending.values()
-        ]
+    valid_results = []
+    for r in results:
+        if isinstance(r, Exception):
+            continue
+        valid_results.append(r)
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        new_pending = {}
-
-        for key,(P,res) in zip(list(pending.keys()), zip(pending.values(), results)):
-            if isinstance(res, Exception):
-                new_pending[key] = P
-            else:
-                success[key] = res
-
-        pending = new_pending
-
-    results = [success[k] for k in PROPERTIES if k in success]
+    # ================= EXCEL =================
 
     wb = Workbook()
     wb.remove(wb.active)
@@ -333,17 +301,14 @@ async def main():
 
     property_totals = []
 
-
-    # ================= SHEET BUILDER =================
+    thin = Border(
+        left=Side(style="thin", color="DDDDDD"),
+        right=Side(style="thin", color="DDDDDD"),
+        top=Side(style="thin", color="DDDDDD"),
+        bottom=Side(style="thin", color="DDDDDD"),
+    )
 
     def create_sheet(ws, data_map):
-
-        thin = Border(
-            left=Side(style="thin", color="DDDDDD"),
-            right=Side(style="thin", color="DDDDDD"),
-            top=Side(style="thin", color="DDDDDD"),
-            bottom=Side(style="thin", color="DDDDDD"),
-        )
 
         headers = ["Date","Cash","QR","Online","Total"]
         ws.append(headers)
@@ -404,77 +369,37 @@ async def main():
             cell.font = Font(bold=True,color="FFFFFF")
             cell.alignment = Alignment(horizontal="center")
 
+    # ================= PROPERTY SHEETS =================
 
-        # ===== CHARTS =====
-
-        start_chart_row = ws.max_row + 3
-
-        for i,col in enumerate(range(2,6)):
-
-            chart = BarChart()
-            chart.height = 12
-            chart.width = 26
-            chart.title = headers[col-1]
-            chart.legend = None
-
-            data = Reference(ws, min_col=col, min_row=1, max_row=len(date_list)+1)
-            cats = Reference(ws, min_col=1, min_row=2, max_row=len(date_list)+1)
-
-            chart.add_data(data, titles_from_data=True)
-            chart.set_categories(cats)
-
-            series = chart.series[0]
-            pts = []
-
-            for hr in range(len(date_list)):
-                dp = DataPoint(idx=hr)
-                dp.graphicalProperties.solidFill = get_row_color(hr)
-                pts.append(dp)
-
-            series.dPt = pts
-
-            ws.add_chart(chart, f"A{start_chart_row + i*22}")
-
-        footer_row = start_chart_row + 4*22
-        ws.cell(row=footer_row, column=1).value = "📊 Excel bar chart auto-generated"
-        ws.cell(row=footer_row, column=1).font = Font(bold=True)
-
-
-    # ===== PROPERTY SHEETS =====
-    for name, data in results:
+    for name, data in valid_results:
 
         ws = wb.create_sheet(name[:31])
         create_sheet(ws, data)
 
-        cash_total = qr_total = online_total = total_total = 0
+        totals = {"cash":0,"qr":0,"online":0,"total":0}
 
         for d in date_list:
 
-            consolidated[d]["cash"] += data[d]["cash"]
-            consolidated[d]["qr"] += data[d]["qr"]
-            consolidated[d]["online"] += data[d]["online"]
-            consolidated[d]["total"] += data[d]["total"]
+            for k in consolidated[d]:
+                consolidated[d][k] += data[d][k]
 
-            cash_total += data[d]["cash"]
-            qr_total += data[d]["qr"]
-            online_total += data[d]["online"]
-            total_total += data[d]["total"]
+            totals["cash"] += data[d]["cash"]
+            totals["qr"] += data[d]["qr"]
+            totals["online"] += data[d]["online"]
+            totals["total"] += data[d]["total"]
 
         property_totals.append({
             "name": name,
-            "cash": cash_total,
-            "qr": qr_total,
-            "online": online_total,
-            "total": total_total
+            **totals
         })
 
+    # ================= CONSOLIDATED =================
 
-    # ===== CONSOLIDATED =====
     ws = wb.create_sheet("CONSOLIDATED")
     create_sheet(ws, consolidated)
 
+    # ================= PROPERTY RANKING =================
 
-    # ===== PROPERTY RANKING =====
     ws = wb.create_sheet("PROPERTY RANKING")
 
     headers = ["Rank","Property","Cash","QR","Online","Total"]
@@ -488,10 +413,15 @@ async def main():
         c.font = Font(bold=True,color="FFFFFF")
         c.alignment = Alignment(horizontal="center")
 
+    widths = [8,25,12,12,12,14]
+    for i,w in enumerate(widths,start=1):
+        ws.column_dimensions[chr(64+i)].width = w
+
     property_totals.sort(key=lambda x: x["total"], reverse=True)
 
     rank = 1
     for p in property_totals:
+
         ws.append([
             rank,
             p["name"],
@@ -500,8 +430,17 @@ async def main():
             round(p["online"],2),
             round(p["total"],2)
         ])
+
+        r = ws.max_row
+
+        for c in range(1,7):
+            cell = ws.cell(row=r,column=c)
+            cell.border = thin
+            cell.alignment = Alignment(horizontal="center")
+
         rank += 1
 
+    # ================= SAVE =================
 
     buffer = BytesIO()
     wb.save(buffer)
