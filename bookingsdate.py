@@ -2,13 +2,14 @@
 # ULTRA FAST ASYNC MULTI PROPERTY AUTOMATION
 # DATE-WISE BOOKING MODE REPORT
 # MONTH START → TODAY
+# FINAL FIXED VERSION
 # ==============================
 
 import os
 import json
 import asyncio
 import aiohttp
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 import traceback
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
@@ -17,10 +18,8 @@ from openpyxl.chart.series import DataPoint
 from io import BytesIO
 import pytz
 
-IST = pytz.timezone("Asia/Kolkata")
 
-MAX_FULL_RUN_RETRIES = 5
-FULL_RUN_RETRY_DELAY = 10
+IST = pytz.timezone("Asia/Kolkata")
 
 PROP_PARALLEL_LIMIT = 3
 prop_semaphore = asyncio.Semaphore(PROP_PARALLEL_LIMIT)
@@ -117,7 +116,7 @@ def get_booking_source(b):
     return "OBA"
 
 
-# ================= FETCH =================
+# ================= FETCH BOOKINGS =================
 
 async def fetch_bookings_batch(session, offset, f, t, P):
 
@@ -148,17 +147,14 @@ async def fetch_bookings_batch(session, offset, f, t, P):
     ) as r:
 
         if r.status != 200:
-            raise RuntimeError("BATCH FAIL")
+            return {}
 
         return await r.json()
 
 
 # ================= PROCESS PROPERTY =================
 
-async def process_property(P, TF, TT, HF, HT, date_list):
-
-    start_dt = datetime.strptime(TF, "%Y-%m-%d").date()
-    end_dt = datetime.strptime(TT, "%Y-%m-%d").date()
+async def process_property(P, TF, TT, date_list):
 
     date_map = {
         d: {"OYO":0,"Walk-in":0,"MMT":0,"BDC":0,"Agoda":0,"CB":0,"TA":0,"OBA":0}
@@ -171,7 +167,7 @@ async def process_property(P, TF, TT, HF, HT, date_list):
 
         while True:
 
-            data = await fetch_bookings_batch(session, offset, HF, HT, P)
+            data = await fetch_bookings_batch(session, offset, TF, TT, P)
 
             if not data or not data.get("bookingIds"):
                 break
@@ -213,73 +209,37 @@ async def process_property(P, TF, TT, HF, HT, date_list):
     return (P["name"], date_map)
 
 
-# ================= RETRY =================
-
-async def run_property_with_retry(P, TF, TT, HF, HT, date_list, retries=3):
-
-    for _ in range(retries):
-        try:
-            return await process_property(P, TF, TT, HF, HT, date_list)
-        except:
-            await asyncio.sleep(2)
-
-    raise RuntimeError("PROPERTY FAILED")
-
-
-async def run_property_limited(P, TF, TT, HF, HT, date_list):
-    async with prop_semaphore:
-        return await run_property_with_retry(P, TF, TT, HF, HT, date_list)
-
-
 # ================= MAIN =================
 
 async def main():
 
-    now = datetime.now(IST).date()
-
-    month_start = now.replace(day=1)
+    today = datetime.now(IST).date()
+    month_start = today.replace(day=1)
 
     TF = month_start.strftime("%Y-%m-%d")
-    TT = now.strftime("%Y-%m-%d")
-
-    HF = TF
-    HT = TT
+    TT = today.strftime("%Y-%m-%d")
 
     display_month = today.strftime("%B %Y")
 
-    # date range list
+    # date list
     date_list = []
     d = month_start
-    while d <= now:
+    while d <= today:
         date_list.append(d)
         d += timedelta(days=1)
 
-    pending = {k:v for k,v in PROPERTIES.items()}
-    success = {}
+    # ================= FETCH =================
 
-    for _ in range(MAX_FULL_RUN_RETRIES):
+    tasks = [
+        process_property(P, TF, TT, date_list)
+        for P in PROPERTIES.values()
+    ]
 
-        if not pending:
-            break
+    results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        tasks = [
-            run_property_limited(P, TF, TT, HF, HT, date_list)
-            for P in pending.values()
-        ]
+    valid_results = [r for r in results if not isinstance(r, Exception)]
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        new_pending = {}
-
-        for key,(P,res) in zip(list(pending.keys()), zip(pending.values(), results)):
-            if isinstance(res, Exception):
-                new_pending[key] = P
-            else:
-                success[key] = res
-
-        pending = new_pending
-
-    results = [success[k] for k in PROPERTIES if k in success]
+    # ================= EXCEL =================
 
     wb = Workbook()
     wb.remove(wb.active)
@@ -291,17 +251,16 @@ async def main():
 
     property_totals = []
 
+    thin = Border(
+        left=Side(style="thin", color="DDDDDD"),
+        right=Side(style="thin", color="DDDDDD"),
+        top=Side(style="thin", color="DDDDDD"),
+        bottom=Side(style="thin", color="DDDDDD"),
+    )
 
     # ================= SHEET BUILDER =================
 
     def create_sheet(ws, data_map):
-
-        thin = Border(
-            left=Side(style="thin", color="DDDDDD"),
-            right=Side(style="thin", color="DDDDDD"),
-            top=Side(style="thin", color="DDDDDD"),
-            bottom=Side(style="thin", color="DDDDDD"),
-        )
 
         headers = [
             "Date",
@@ -353,7 +312,6 @@ async def main():
                 cell.border = thin
                 cell.alignment = Alignment(horizontal="center")
 
-        # TOTAL ROW
         ws.append(["TOTAL",*totals,sum(totals)])
 
         total_row = ws.max_row
@@ -364,44 +322,9 @@ async def main():
             cell.font = Font(bold=True,color="FFFFFF")
             cell.alignment = Alignment(horizontal="center")
 
-        # ===== CHARTS =====
-
-        start_chart_row = ws.max_row + 3
-
-        for i,col in enumerate(range(2,10)):
-
-            chart = BarChart()
-            chart.height = 12
-            chart.width = 26
-            chart.title = headers[col-1]
-            chart.legend = None
-
-            data = Reference(ws, min_col=col, min_row=1, max_row=len(date_list)+1)
-            cats = Reference(ws, min_col=1, min_row=2, max_row=len(date_list)+1)
-
-            chart.add_data(data, titles_from_data=True)
-            chart.set_categories(cats)
-
-            series = chart.series[0]
-            pts = []
-
-            for hr in range(len(date_list)):
-                dp = DataPoint(idx=hr)
-                dp.graphicalProperties.solidFill = get_row_color(hr)
-                pts.append(dp)
-
-            series.dPt = pts
-
-            ws.add_chart(chart, f"A{start_chart_row + i*22}")
-
-        footer_row = start_chart_row + 8*22
-        ws.cell(row=footer_row, column=1).value = "📊 Excel bar chart auto-generated"
-        ws.cell(row=footer_row, column=1).font = Font(bold=True)
-
-
     # ================= PROPERTY SHEETS =================
 
-    for name, data in results:
+    for name, data in valid_results:
 
         ws = wb.create_sheet(name[:31])
         create_sheet(ws, data)
@@ -420,12 +343,10 @@ async def main():
             "total": total_prop
         })
 
-
     # ================= CONSOLIDATED =================
 
     ws = wb.create_sheet("CONSOLIDATED")
     create_sheet(ws, consolidated)
-
 
     # ================= PROPERTY RANKING =================
 
@@ -441,13 +362,25 @@ async def main():
         c.font = Font(bold=True,color="FFFFFF")
         c.alignment = Alignment(horizontal="center")
 
+    ws.column_dimensions["A"].width = 8
+    ws.column_dimensions["B"].width = 28
+    ws.column_dimensions["C"].width = 18
+
     property_totals.sort(key=lambda x: x["total"], reverse=True)
 
     rank = 1
     for p in property_totals:
-        ws.append([rank, p["name"], p["total"]])
-        rank += 1
 
+        ws.append([rank, p["name"], p["total"]])
+
+        r = ws.max_row
+
+        for c in range(1,4):
+            cell = ws.cell(row=r,column=c)
+            cell.border = thin
+            cell.alignment = Alignment(horizontal="center")
+
+        rank += 1
 
     # ================= SAVE =================
 
