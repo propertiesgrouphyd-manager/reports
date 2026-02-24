@@ -1,7 +1,7 @@
 # ==============================
 # ULTRA FAST ASYNC MULTI PROPERTY AUTOMATION
 # HOURLY BOOKING MODE REPORT
-# EXACT SAME FORMAT AS CASH VERSION
+# WITH PROPERTY RANKING
 # ==============================
 
 import os
@@ -18,7 +18,6 @@ from io import BytesIO
 import pytz
 
 IST = pytz.timezone("Asia/Kolkata")
-now = datetime.now(IST)
 
 MAX_FULL_RUN_RETRIES = 5
 FULL_RUN_RETRY_DELAY = 10
@@ -118,7 +117,7 @@ def get_booking_source(b):
     return "OBA"
 
 
-# ================= BATCH FETCH =================
+# ================= FETCH =================
 
 async def fetch_bookings_batch(session, offset, f, t, P):
 
@@ -140,13 +139,8 @@ async def fetch_bookings_batch(session, offset, f, t, P):
         "x-source-client": "merchant"
     }
 
-    async with session.get(
-        url,
-        params=params,
-        cookies=cookies,
-        headers=headers,
-        timeout=BATCH_TIMEOUT
-    ) as r:
+    async with session.get(url, params=params, cookies=cookies,
+                           headers=headers, timeout=BATCH_TIMEOUT) as r:
 
         if r.status != 200:
             raise RuntimeError("BATCH FAIL")
@@ -194,9 +188,7 @@ async def process_property(P, TF, TT, HF, HT):
                 except:
                     continue
 
-                d_dt = dt.date()
-
-                if not (tf_dt <= d_dt <= tt_dt):
+                if not (tf_dt <= dt.date() <= tt_dt):
                     continue
 
                 hour = dt.hour
@@ -237,9 +229,7 @@ async def run_property_limited(P, TF, TT, HF, HT):
 
 async def main():
 
-    global now
     now = datetime.now(IST)
-
     target_date = (now - timedelta(days=1)).date()
 
     TF = target_date.strftime("%Y-%m-%d")
@@ -281,12 +271,18 @@ async def main():
         for h in range(24)
     }
 
+    property_totals = []
+
+
+    # ================= LABEL =================
 
     def hour_label(h):
         s = datetime(2000,1,1,h,0)
         e = s + timedelta(hours=1)
         return f"{s.strftime('%I%p').lstrip('0')} - {e.strftime('%I%p').lstrip('0')}"
 
+
+    # ================= SHEET BUILDER =================
 
     def create_sheet(ws, hourly_data):
 
@@ -312,22 +308,25 @@ async def main():
             c.font = Font(bold=True,color="FFFFFF")
             c.alignment = Alignment(horizontal="center", vertical="center")
 
-        # widths
         widths = [14,18,10,10,10,10,10,10,10,10,12]
         for i,w in enumerate(widths, start=1):
             ws.column_dimensions[chr(64+i)].width = w
 
-        totals = [0]*9
+        totals = [0]*8
 
         for h in range(24):
 
             row = hourly_data[h]
+
             values = [
                 row["OYO"],row["Walk-in"],row["MMT"],row["BDC"],
                 row["Agoda"],row["CB"],row["TA"],row["OBA"]
             ]
 
             total = sum(values)
+
+            for i,v in enumerate(values):
+                totals[i] += v
 
             ws.append([
                 display_date,
@@ -346,30 +345,26 @@ async def main():
                 cell.alignment = Alignment(horizontal="center")
 
         # TOTAL ROW
-        ws.append(["","","","","","","","","","",""])
+        ws.append(["","TOTAL",*totals,sum(totals)])
 
         total_row = ws.max_row
 
         for col in range(1,len(headers)+1):
-            c = ws.cell(row=total_row,column=col)
-            c.fill = PatternFill("solid", fgColor="000000")
-            c.font = Font(bold=True,color="FFFFFF")
-            c.alignment = Alignment(horizontal="center")
-
-        ws.cell(row=total_row,column=2).value = "TOTAL"
-
+            cell = ws.cell(row=total_row,column=col)
+            cell.fill = PatternFill("solid", fgColor="000000")
+            cell.font = Font(bold=True,color="FFFFFF")
+            cell.alignment = Alignment(horizontal="center")
 
         # ===== CHARTS =====
 
-        start_chart_row = ws.max_row + 2
+        start_chart_row = ws.max_row + 3
 
         for i,col in enumerate(range(3,11)):
 
             chart = BarChart()
-            chart.height = 10
-            chart.width = 24
+            chart.height = 12
+            chart.width = 26
             chart.title = headers[col-1]
-            chart.style = 10
             chart.legend = None
 
             data = Reference(ws, min_col=col, min_row=1, max_row=25)
@@ -379,37 +374,74 @@ async def main():
             chart.set_categories(cats)
 
             series = chart.series[0]
-            points = []
+            pts = []
 
             for hr in range(24):
                 dp = DataPoint(idx=hr)
                 dp.graphicalProperties.solidFill = get_hour_color(hr)
-                points.append(dp)
+                pts.append(dp)
 
-            series.dPt = points
+            series.dPt = pts
 
-            ws.add_chart(chart, f"A{start_chart_row + i*15}")
+            ws.add_chart(chart, f"A{start_chart_row + i*22}")
 
-        footer_row = start_chart_row + 8*15
+        footer_row = start_chart_row + 8*22
         ws.cell(row=footer_row, column=1).value = "📊 Excel bar chart auto-generated"
         ws.cell(row=footer_row, column=1).font = Font(bold=True)
 
 
-    # property sheets
+    # ================= PROPERTY SHEETS =================
+
     for name, hourly in results:
 
         ws = wb.create_sheet(name[:31])
         create_sheet(ws, hourly)
 
+        totals = 0
+
         for h in range(24):
+
             for k in consolidated[h]:
                 consolidated[h][k] += hourly[h][k]
 
+            totals += sum(hourly[h].values())
 
-    # consolidated
+        property_totals.append({
+            "name": name,
+            "total": totals
+        })
+
+
+    # ================= CONSOLIDATED =================
+
     ws = wb.create_sheet("CONSOLIDATED")
     create_sheet(ws, consolidated)
 
+
+    # ================= PROPERTY RANKING =================
+
+    ws = wb.create_sheet("PROPERTY RANKING")
+
+    headers = ["Rank","Property","Total Bookings"]
+    ws.append(headers)
+
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+
+    for col in range(1,4):
+        c = ws.cell(row=1,column=col)
+        c.fill = header_fill
+        c.font = Font(bold=True,color="FFFFFF")
+        c.alignment = Alignment(horizontal="center")
+
+    property_totals.sort(key=lambda x: x["total"], reverse=True)
+
+    rank = 1
+    for p in property_totals:
+        ws.append([rank, p["name"], p["total"]])
+        rank += 1
+
+
+    # ================= SAVE =================
 
     buffer = BytesIO()
     wb.save(buffer)
