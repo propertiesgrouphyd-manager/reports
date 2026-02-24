@@ -216,11 +216,16 @@ async def main():
     today = datetime.now(IST).date()
     month_start = today.replace(day=1)
 
-    TF = month_start.strftime("%Y-%m-%d")
-    TT = today.strftime("%Y-%m-%d")
+    # ===== DATE OBJECTS =====
+    HF_date = month_start - timedelta(days=30)
+    HT_date = month_start
 
-    HF = (TF - timedelta(days=30)).strftime("%Y-%m-%d")
-    HT = TF
+    # ===== STRING FORMAT (API READY) =====
+    TF = month_start.strftime("%Y-%m-%d")   # From (month start)
+    TT = today.strftime("%Y-%m-%d")         # To (today)
+
+    HF = HF_date.strftime("%Y-%m-%d")       # History From
+    HT = HT_date.strftime("%Y-%m-%d")       # History To
     
 
     display_month = today.strftime("%B %Y")
