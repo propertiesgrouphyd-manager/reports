@@ -287,7 +287,7 @@ async def main():
     HF = TF
     HT = TT
 
-    display_date = today.strftime("%d-%m-%Y")
+    display_month = today.strftime("%B %Y")
 
     # date list
     date_list = []
@@ -509,7 +509,7 @@ async def main():
 
     await send_telegram_excel_buffer(
         buffer,
-        filename=f"Collection_Datewise_{display_date}.xlsx",
+        filename=f"Collection_Datewise_{display_month}.xlsx",
         caption="📊 Date-wise Collection Report"
     )
 
