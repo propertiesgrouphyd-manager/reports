@@ -522,7 +522,7 @@ async def main():
             ])
 
             r = ws.max_row
-            fill = PatternFill("solid", fgColor=get_hour_color(idx))
+            fill = PatternFill("solid", fgColor=get_hour_color(idx, len(date_list)))
 
             for c in range(1, 6):
                 cell = ws.cell(row=r, column=c)
