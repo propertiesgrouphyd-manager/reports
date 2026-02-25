@@ -308,13 +308,11 @@ async def run_property_limited(P, TF, TT, HF, HT):
 
 
 # ================= MAIN =================
-# ================= MAIN =================
 async def main():
 
     now = datetime.now(IST)
     target_date = (now - timedelta(days=1)).date()
 
-    # ================= DATE RANGE =================
     TF = target_date.replace(day=1).strftime("%Y-%m-%d")
     TT = target_date.strftime("%Y-%m-%d")
 
@@ -346,7 +344,7 @@ async def main():
 
         pending = new_pending
 
-    results = [success[k] for k in PROPERTIES if k in success]
+    valid_results = [success[k] for k in PROPERTIES if k in success]
 
     # ================= DATE LIST =================
     start_dt = datetime.strptime(TF, "%Y-%m-%d").date()
@@ -362,19 +360,19 @@ async def main():
     wb = Workbook()
     wb.remove(wb.active)
 
-    consolidated = {
-        d: {"OYO":0,"Walk-in":0,"MMT":0,"BDC":0,"Agoda":0,"CB":0,"TA":0,"OBA":0}
-        for d in date_list
-    }
-
-    property_totals = []
-
     thin = Border(
         left=Side(style="thin", color="DDDDDD"),
         right=Side(style="thin", color="DDDDDD"),
         top=Side(style="thin", color="DDDDDD"),
         bottom=Side(style="thin", color="DDDDDD"),
     )
+
+    consolidated = {
+        d: {"OYO":0,"Walk-in":0,"MMT":0,"BDC":0,"Agoda":0,"CB":0,"TA":0,"OBA":0}
+        for d in date_list
+    }
+
+    property_totals = []
 
     # ================= SHEET BUILDER =================
     def create_sheet(ws, date_map):
@@ -394,17 +392,11 @@ async def main():
             c.font = Font(bold=True, color="FFFFFF")
             c.alignment = Alignment(horizontal="center")
 
-        # ===== FIXED PREMIUM WIDTHS =====
-        ws.column_dimensions["A"].width = 18   # Date wider
-        ws.column_dimensions["B"].width = 12
-        ws.column_dimensions["C"].width = 12
-        ws.column_dimensions["D"].width = 12
-        ws.column_dimensions["E"].width = 12
-        ws.column_dimensions["F"].width = 12
-        ws.column_dimensions["G"].width = 12
-        ws.column_dimensions["H"].width = 12
-        ws.column_dimensions["I"].width = 12
-        ws.column_dimensions["J"].width = 14   # Total wider
+        # widths fixed
+        ws.column_dimensions["A"].width = 18
+        for col in ["B","C","D","E","F","G","H","I"]:
+            ws.column_dimensions[col].width = 12
+        ws.column_dimensions["J"].width = 14
 
         totals = [0]*8
 
@@ -437,7 +429,7 @@ async def main():
                 cell.border = thin
                 cell.alignment = Alignment(horizontal="center")
 
-        # ===== TOTAL ROW =====
+        # total row
         ws.append(["TOTAL", *totals, sum(totals)])
 
         total_row = ws.max_row
@@ -448,11 +440,11 @@ async def main():
             cell.font = Font(bold=True, color="FFFFFF")
             cell.alignment = Alignment(horizontal="center")
 
-        # ===== CHARTS =====
+        # charts
         start_chart_row = ws.max_row + 3
-        chart_gap = 24   # more spacing to prevent overlap
+        chart_gap = 24
 
-        chart_columns = list(range(2,10)) + [10]  # include TOTAL column
+        chart_columns = list(range(2,10)) + [10]
         chart_titles = [
             "OYO","Walk-in","MMT","BDC",
             "Agoda","CB","TA","OBA","Total Bookings"
@@ -472,24 +464,34 @@ async def main():
             chart.add_data(data, titles_from_data=True)
             chart.set_categories(cats)
 
-            series = chart.series[0]
-            pts = []
-
-            for idx in range(len(date_list)):
-                dp = DataPoint(idx=idx)
-                dp.graphicalProperties.solidFill = get_hour_color(idx)
-                pts.append(dp)
-
-            series.dPt = pts
-
             ws.add_chart(chart, f"A{start_chart_row + i*chart_gap}")
 
-        footer_row = start_chart_row + len(chart_columns)*chart_gap + 2
-        ws.cell(row=footer_row, column=1).value = "📊 Excel bar chart auto-generated"
-        ws.cell(row=footer_row, column=1).font = Font(bold=True)
-
     # ================= PROPERTY SHEETS =================
-    for name, date_map in results:
+    for name, df, *_ in valid_results:
+
+        # build date map from dataframe
+        date_map = {
+            d: {"OYO":0,"Walk-in":0,"MMT":0,"BDC":0,"Agoda":0,"CB":0,"TA":0,"OBA":0}
+            for d in date_list
+        }
+
+        if not df.empty:
+            for _, r in df.iterrows():
+                try:
+                    d_obj = datetime.strptime(r["Date"], "%Y-%m-%d").date()
+                except:
+                    continue
+
+                if d_obj not in date_map:
+                    continue
+
+                src = r.get("Booking Source", "OBA")
+                rooms = int(r.get("Rooms", 1))
+
+                if src not in date_map[d_obj]:
+                    src = "OBA"
+
+                date_map[d_obj][src] += rooms
 
         ws = wb.create_sheet(name[:31])
         create_sheet(ws, date_map)
@@ -526,11 +528,10 @@ async def main():
         c.font = Font(bold=True,color="FFFFFF")
         c.alignment = Alignment(horizontal="center")
 
-    # ===== FIXED WIDTHS =====
     ws.column_dimensions["A"].width = 10
     ws.column_dimensions["B"].width = 30
     ws.column_dimensions["C"].width = 18
-    ws.column_dimensions["D"].width = 20   # Badge wider (fix overlap)
+    ws.column_dimensions["D"].width = 20
 
     def get_medal(rank):
         if rank == 1:
@@ -547,13 +548,11 @@ async def main():
 
     for idx,p in enumerate(property_totals):
 
-        medal = get_medal(rank)
-
         ws.append([
             rank,
             p["name"],
             p["total"],
-            medal
+            get_medal(rank)
         ])
 
         r = ws.max_row
