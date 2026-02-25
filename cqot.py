@@ -494,6 +494,9 @@ async def main():
 
         chart_titles = ["Cash", "QR", "Online", "Total"]
 
+        base_chart_row = ws.max_row + 3
+        chart_gap = 22   # 🔥 spacing between charts (fix overlap)
+
         for i, col in enumerate(range(3, 7)):
 
             chart = BarChart()
@@ -518,10 +521,10 @@ async def main():
 
             series.dPt = points
 
-            chart_row = ws.max_row + 2 + (i * 20)
+            chart_row = base_chart_row + (i * chart_gap)
             ws.add_chart(chart, f"A{chart_row}")
 
-        footer_row = chart_row + 20
+        footer_row = base_chart_row + (len(chart_titles) * chart_gap) + 2
         ws.cell(row=footer_row, column=1).value = "📊 Excel bar chart auto-generated"
         ws.cell(row=footer_row, column=1).font = Font(bold=True, size=11)
 
@@ -538,6 +541,69 @@ async def main():
 
     ws = wb.create_sheet("CONSOLIDATED")
     create_sheet(ws, consolidated)
+
+    # ================= PROPERTY RANKING =================
+
+    ranking_data = []
+
+    for name, hourly_cash in valid_results:
+
+        total_cash = sum(v["cash"] for v in hourly_cash.values())
+        total_qr = sum(v["qr"] for v in hourly_cash.values())
+        total_online = sum(v["online"] for v in hourly_cash.values())
+        total_total = sum(v["total"] for v in hourly_cash.values())
+
+        ranking_data.append({
+            "name": name,
+            "cash": total_cash,
+            "qr": total_qr,
+            "online": total_online,
+            "total": total_total
+        })
+
+    ranking_data.sort(key=lambda x: x["total"], reverse=True)
+
+    ws = wb.create_sheet("PROPERTY RANKING")
+
+    headers = ["Rank", "Property", "Cash", "QR", "Online", "Total"]
+    ws.append(headers)
+
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+
+    for col in range(1, 7):
+        c = ws.cell(row=1, column=col)
+        c.fill = header_fill
+        c.font = Font(bold=True, color="FFFFFF")
+        c.alignment = Alignment(horizontal="center")
+
+    widths = [8, 28, 14, 14, 14, 16]
+
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[chr(64+i)].width = w
+
+    rank = 1
+
+    for idx, p in enumerate(ranking_data):
+
+        ws.append([
+            rank,
+            p["name"],
+            round(p["cash"], 2),
+            round(p["qr"], 2),
+            round(p["online"], 2),
+            round(p["total"], 2)
+        ])
+
+        r = ws.max_row
+        fill = PatternFill("solid", fgColor=get_hour_color(idx))
+
+        for c in range(1, 7):
+            cell = ws.cell(row=r, column=c)
+            cell.fill = fill
+            cell.border = thin
+            cell.alignment = Alignment(horizontal="center")
+
+        rank += 1
 
 
     buffer = BytesIO()
