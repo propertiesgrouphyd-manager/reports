@@ -553,38 +553,38 @@ async def main():
         ws.column_dimensions["E"].width = 16
 
 
-    # ===== CHARTS =====
-    chart_titles = ["Cash", "QR", "Online", "Total"]
+        # ===== CHARTS =====
+        chart_titles = ["Cash", "QR", "Online", "Total"]
 
-    base_chart_row = ws.max_row + 3
-    chart_gap = 22
+        base_chart_row = ws.max_row + 3
+        chart_gap = 22
 
-    for i, col in enumerate(range(2, 6)):
+        for i, col in enumerate(range(2, 6)):
 
-        chart = BarChart()
-        chart.title = f"{chart_titles[i]} Trend"
-        chart.height = 12
-        chart.width = 26
-        chart.legend = None
+            chart = BarChart()
+            chart.title = f"{chart_titles[i]} Trend"
+            chart.height = 12
+            chart.width = 26
+            chart.legend = None
 
-        data = Reference(ws, min_col=col, min_row=1, max_row=len(date_list)+1)
-        cats = Reference(ws, min_col=1, min_row=2, max_row=len(date_list)+1)
+            data = Reference(ws, min_col=col, min_row=1, max_row=len(date_list)+1)
+            cats = Reference(ws, min_col=1, min_row=2, max_row=len(date_list)+1)
 
-        chart.add_data(data, titles_from_data=True)
-        chart.set_categories(cats)
+            chart.add_data(data, titles_from_data=True)
+            chart.set_categories(cats)
 
-        series = chart.series[0]
-        points = []
+            series = chart.series[0]
+            points = []
 
-        for idx in range(len(date_list)):
-            dp = DataPoint(idx=idx)
-            dp.graphicalProperties.solidFill = get_hour_color(idx)
-            points.append(dp)
+            for idx in range(len(date_list)):
+                dp = DataPoint(idx=idx)
+                dp.graphicalProperties.solidFill = get_hour_color(idx, len(date_list))
+                points.append(dp)
 
-        series.dPt = points
+            series.dPt = points
 
-        chart_row = base_chart_row + (i * chart_gap)
-        ws.add_chart(chart, f"A{chart_row}")
+            chart_row = base_chart_row + (i * chart_gap)
+            ws.add_chart(chart, f"A{chart_row}")
     
 
     # ================= PROPERTY SHEETS =================
