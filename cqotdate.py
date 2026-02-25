@@ -83,18 +83,49 @@ if not PROPERTIES:
 
 # ================= COLOR =================
 
-def get_hour_color(hour):
+# ================= MONTH DAY COLOR =================
 
-    palette = [
-        "EEF3FB","E8F0FA","E3EDFA","DEEAFA",
-        "D9F2FF","DFF7FF","E6FBFF","FFF9DB",
-        "FFF4CC","FFEFB3","FFE699","FFDD80",
-        "FFE0CC","FFD6B3","FFCC99","FFC280",
-        "FFD9D9","FFD1D1","FFC9C9","FFC1C1",
-        "F3E5F5","EDE7F6","E8EAF6","E3F2FD"
+def get_hour_color(day_index: int, total_days: int = 31):
+    """
+    Unique color for each day in month.
+    Natural sun → sunset → night progression.
+    Works for 28–31 days.
+    """
+
+    if total_days <= 1:
+        total_days = 31
+
+    # Normalize position 0 → 1 across month
+    t = day_index / (total_days - 1)
+
+    # Solar gradient anchors
+    colors = [
+        (238, 243, 251),  # dawn blue
+        (217, 242, 255),  # morning sky
+        (255, 244, 204),  # sunlight
+        (255, 221, 128),  # noon warm
+        (255, 204, 153),  # evening
+        (255, 193, 193),  # sunset
+        (232, 234, 246),  # twilight
+        (227, 242, 253)   # night blue
     ]
 
-    return palette[hour % 24]
+    # Map t across segments
+    seg = t * (len(colors) - 1)
+    i = int(seg)
+    frac = seg - i
+
+    if i >= len(colors) - 1:
+        r, g, b = colors[-1]
+    else:
+        r1, g1, b1 = colors[i]
+        r2, g2, b2 = colors[i + 1]
+
+        r = int(r1 + (r2 - r1) * frac)
+        g = int(g1 + (g2 - g1) * frac)
+        b = int(b1 + (b2 - b1) * frac)
+
+    return f"{r:02X}{g:02X}{b:02X}"
 
 
 # ================= FETCH DETAILS =================
@@ -598,8 +629,8 @@ async def main():
         ])
 
         r = ws.max_row
-        fill = PatternFill("solid", fgColor=get_hour_color(idx))
-
+        fill = PatternFill("solid", fgColor=get_hour_color(idx, len(date_list)))
+        
         for c in range(1, 8):
             cell = ws.cell(row=r, column=c)
             cell.fill = fill
