@@ -185,12 +185,26 @@ async def process_property(P, TF, TT, HF, HT):
                 if status not in ["Checked In", "Checked Out"]:
                     continue
 
-                checkin_str = b.get("checkin")
-                if not checkin_str:
+                # ================= DATE EXTRACTION (ROBUST) =================
+                raw_time = (
+                    b.get("checkin_time")
+                    or b.get("checkin")
+                    or b.get("checkin_date")
+                    or b.get("created_at")
+                )
+
+                if not raw_time:
                     continue
 
+                d_dt = None
+
                 try:
-                    d_dt = datetime.strptime(checkin_str, "%Y-%m-%d").date()
+                    if "T" in str(raw_time):
+                        dt = datetime.fromisoformat(str(raw_time).replace("Z", ""))
+                        dt = dt.astimezone(IST)
+                        d_dt = dt.date()
+                    else:
+                        d_dt = datetime.strptime(str(raw_time), "%Y-%m-%d").date()
                 except:
                     continue
 
@@ -205,9 +219,11 @@ async def process_property(P, TF, TT, HF, HT):
 
             if len(data.get("bookingIds", [])) < 100:
                 break
+
             offset += 100
 
     return (P["name"], date_map)
+                
 
             
 
@@ -218,7 +234,7 @@ async def run_property_with_retry(P, TF, TT, HF, HT, retries=3):
     for _ in range(retries):
         try:
             return await process_property(P, TF, TT, HF, HT)
-        xcept:
+        except:
             await asyncio.sleep(2)
 
     raise RuntimeError("PROPERTY FAILED")
