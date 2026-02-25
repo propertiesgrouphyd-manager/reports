@@ -618,6 +618,252 @@ async def main():
             cell.alignment = Alignment(horizontal="center")
 
         rank += 1
+
+
+    # ================= KPI SUMMARY DASHBOARD (DYNAMIC) =================
+
+    # helper: flat table of property-hour metrics for formulas
+    # we'll build it on a hidden sheet "KPI_DATA"
+    from openpyxl.worksheet.datavalidation import DataValidation
+    from openpyxl.utils import get_column_letter
+
+    kpi_data_ws = wb.create_sheet("KPI_DATA")
+    kpi_data_ws.sheet_state = "hidden"
+
+    # header row for helper table
+    kpi_data_ws.append(["Property", "Hour", "Cash", "QR", "Online", "Total"])
+
+    for name, hourly_cash in valid_results:
+        for h in range(24):
+            row = hourly_cash.get(h, {"cash": 0, "qr": 0, "online": 0, "total": 0})
+            kpi_data_ws.append([
+                name,
+                h,
+                round(row["cash"], 2),
+                round(row["qr"], 2),
+                round(row["online"], 2),
+                round(row["total"], 2),
+            ])
+
+    # range info for formulas
+    last_row = kpi_data_ws.max_row
+    data_range = f"$A$2:$F${last_row}"       # Property, Hour, Cash, QR, Online, Total
+
+    # totals (for static bottom cards)
+    total_cash_all = sum(p["cash"] for p in ranking_data)
+    total_qr_all = sum(p["qr"] for p in ranking_data)
+    total_online_all = sum(p["online"] for p in ranking_data)
+    total_total_all = sum(p["total"] for p in ranking_data)
+
+    # ================= VISIBLE KPI SUMMARY SHEET =================
+
+    ws = wb.create_sheet("KPI SUMMARY")
+
+    # layout
+    ws.column_dimensions["A"].width = 20
+    ws.column_dimensions["B"].width = 22
+    ws.column_dimensions["C"].width = 22
+    ws.column_dimensions["D"].width = 22
+    ws.column_dimensions["E"].width = 22
+    ws.column_dimensions["F"].width = 22
+
+    # header
+    ws.merge_cells("A1:F2")
+    cell = ws["A1"]
+    cell.value = "🏨 HOURLY KPI DASHBOARD"
+    cell.fill = PatternFill("solid", fgColor="1F4E78")
+    cell.font = Font(bold=True, color="FFFFFF", size=18)
+    cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    # ---------- DROPDOWNS (ROW 4) ----------
+
+    # Property dropdown (only property names)
+    property_names = [name for name, _ in valid_results]
+    ws["A4"].value = "Property"
+    ws["A4"].font = Font(bold=True)
+    prop_cell = ws["B4"]
+    prop_cell.value = property_names[0] if property_names else ""
+    dv_prop = DataValidation(type="list", formula1=f'"{",".join(property_names)}"')
+    ws.add_data_validation(dv_prop)
+    dv_prop.add(prop_cell)
+
+    # Time dropdown (hour ranges: 0-1, 1-2, ... 23-24, plus "ALL DAY")
+    ws["C4"].value = "Time Range"
+    ws["C4"].font = Font(bold=True)
+
+    time_labels = ["ALL DAY"] + [hour_label(h) for h in range(24)]
+    time_cell = ws["D4"]
+    time_cell.value = "ALL DAY"
+    dv_time = DataValidation(type="list", formula1=f'"{",".join(time_labels)}"')
+    ws.add_data_validation(dv_time)
+    dv_time.add(time_cell)
+
+    # style for dropdown row
+    for col in range(1, 7):
+        c = ws.cell(row=4, column=col)
+        c.fill = PatternFill("solid", fgColor="E3F2FD")
+        c.alignment = Alignment(horizontal="center")
+        c.border = thin
+
+    # info row
+    ws["A5"].value = f"Report Date: {display_date}"
+    ws["A5"].font = Font(bold=True)
+    ws.merge_cells("A5:C5")
+    ws["D5"].value = "Select Property + Time to view KPIs"
+    ws["D5"].alignment = Alignment(horizontal="right")
+    ws.merge_cells("D5:F5")
+
+    # ---------- NAMED CELLS FOR EASIER FORMULAS ----------
+
+    # we will refer to these cells in formulas
+    sel_prop = "$B$4"
+    sel_time = "$D$4"
+
+    # helper cells for time start / end hour (put them out of view, e.g., H4:I4)
+    ws["H3"] = "TimeStartHour"
+    ws["I3"] = "TimeEndHour"
+
+    # If ALL DAY -> 0 to 23, else parse hour index from list position
+    # Here we use MATCH on the label list written in a vertical helper range (H6:H29)
+    # Fill helper list of time labels (same as dropdown) for MATCH
+    ws["H6"] = "ALL DAY"
+    for h in range(24):
+        ws[f"H{7+h}"] = hour_label(h)
+
+    # formulas to compute numeric hour range
+    ws["H4"] = (
+        f'=IF({sel_time}="ALL DAY",0,'
+        f'MATCH({sel_time},$H$7:$H$30,0)-1)'
+    )
+    ws["I4"] = (
+        f'=IF({sel_time}="ALL DAY",23,'
+        f'MATCH({sel_time},$H$7:$H$30,0)-1)'
+    )
+
+    # ---------- KPI CARDS (TOP) ----------
+
+    card_titles = ["Cash", "QR", "Online", "Total", "Rank"]
+    card_colors = ["4CAF50", "1976D2", "009688", "FF9800", "9C27B0"]
+
+    # card positions (row 7.., 1 row for title, 1 for value)
+    start_row = 7
+
+    for i, (title, color) in enumerate(zip(card_titles, card_colors)):
+        col_block = 1 + i  # A,B,C,D,E
+        col_letter1 = get_column_letter(col_block)
+
+        row_title = start_row
+        row_value = start_row + 1
+
+        # title row
+        tcell = ws[f"{col_letter1}{row_title}"]
+        tcell.value = title
+        tcell.fill = PatternFill("solid", fgColor=color)
+        tcell.font = Font(bold=True, color="FFFFFF", size=11)
+        tcell.alignment = Alignment(horizontal="center", vertical="center")
+        tcell.border = thin
+
+        # value row
+        vcell = ws[f"{col_letter1}{row_value}"]
+        vcell.fill = PatternFill("solid", fgColor="FAFAFA")
+        vcell.font = Font(bold=True, color=color, size=13)
+        vcell.alignment = Alignment(horizontal="center", vertical="center")
+        vcell.border = thin
+
+    # formulas for Cash / QR / Online / Total (cards A8–D8)
+    # SUMIFS over KPI_DATA table using selected property and hour range
+    ws["A8"] = (
+        f'=SUMIFS(KPI_DATA!$C$2:$C${last_row},'
+        f'KPI_DATA!$A$2:$A${last_row},{sel_prop},'
+        f'KPI_DATA!$B$2:$B${last_row},">="&$H$4,'
+        f'KPI_DATA!$B$2:$B${last_row},"<="&$I$4)'
+    )
+    ws["B8"] = (
+        f'=SUMIFS(KPI_DATA!$D$2:$D${last_row},'
+        f'KPI_DATA!$A$2:$A${last_row},{sel_prop},'
+        f'KPI_DATA!$B$2:$B${last_row},">="&$H$4,'
+        f'KPI_DATA!$B$2:$B${last_row},"<="&$I$4)'
+    )
+    ws["C8"] = (
+        f'=SUMIFS(KPI_DATA!$E$2:$E${last_row},'
+        f'KPI_DATA!$A$2:$A${last_row},{sel_prop},'
+        f'KPI_DATA!$B$2:$B${last_row},">="&$H$4,'
+        f'KPI_DATA!$B$2:$B${last_row},"<="&$I$4)'
+    )
+    ws["D8"] = (
+        f'=SUMIFS(KPI_DATA!$F$2:$F${last_row},'
+        f'KPI_DATA!$A$2:$A${last_row},{sel_prop},'
+        f'KPI_DATA!$B$2:$B${last_row},">="&$H$4,'
+        f'KPI_DATA!$B$2:$B${last_row},"<="&$I$4)'
+    )
+
+    # Rank card (E8): rank of this property's Total in that time range vs all properties
+    # First compute each property's total for the time range in a helper area (J6:J?, K6:K?)
+    ws["J5"] = "Property"
+    ws["K5"] = "TotalInRange"
+
+    for idx, name in enumerate(property_names, start=6):
+        ws[f"J{idx}"] = name
+        ws[f"K{idx}"] = (
+            f'=SUMIFS(KPI_DATA!$F$2:$F${last_row},'
+            f'KPI_DATA!$A$2:$A${last_row},J{idx},'
+            f'KPI_DATA!$B$2:$B${last_row},">="&$H$4,'
+            f'KPI_DATA!$B$2:$B${last_row},"<="&$I$4)'
+        )
+
+    last_prop_row = 5 + len(property_names)
+
+    # Rank formula: RANK of selected property's total against K6:K{last_prop_row}
+    ws["E8"] = (
+        f'=IFERROR('
+        f'RANK('
+        f'SUMIFS(KPI_DATA!$F$2:$F${last_row},'
+        f'KPI_DATA!$A$2:$A${last_row},{sel_prop},'
+        f'KPI_DATA!$B$2:$B${last_row},">="&$H$4,'
+        f'KPI_DATA!$B$2:$B${last_row},"<="&$I$4),'
+        f'$K$6:$K${last_prop_row},0'
+        f'),"")'
+    )
+
+    # ---------- STATIC BOTTOM CARDS ----------
+
+    bottom_start_row = 12
+
+    static_titles = [
+        "Date",
+        "Total Properties",
+        "Total Cash (Day)",
+        "Total QR (Day)",
+        "Total Online (Day)",
+        "Total (Day)",
+    ]
+    static_values = [
+        display_date,
+        len(valid_results),
+        round(total_cash_all, 2),
+        round(total_qr_all, 2),
+        round(total_online_all, 2),
+        round(total_total_all, 2),
+    ]
+
+    for i, (title, value) in enumerate(zip(static_titles, static_values)):
+        row = bottom_start_row + i
+        tcell = ws[f"A{row}"]
+        vcell = ws[f"B{row}"]
+        tcell.value = title
+        tcell.font = Font(bold=True)
+        tcell.fill = PatternFill("solid", fgColor="EEF3FB")
+        tcell.border = thin
+        vcell.value = value
+        vcell.fill = PatternFill("solid", fgColor="FAFAFA")
+        vcell.border = thin
+
+    # freeze panes
+    ws.freeze_panes = "A7"
+
+
+
+
     
 
     buffer = BytesIO()
