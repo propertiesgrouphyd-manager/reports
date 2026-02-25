@@ -1,6 +1,6 @@
 # ==============================
 # ULTRA FAST ASYNC MULTI PROPERTY AUTOMATION
-# HOURLY CASH + QR + ONLINE + TOTAL REPORT
+# HOURLY CASH ONLY REPORT
 # ==============================
 
 import os
@@ -161,21 +161,14 @@ async def fetch_booking_details(session, P, booking_no):
                     except Exception:
                         continue
 
-                    mode_raw = p.get("mode", "")
-
-                    if mode_raw == "Cash at Hotel":
-                        bucket = "cash"
-                    elif mode_raw == "UPI QR":
-                        bucket = "qr"
-                    elif mode_raw == "oyo_wizard_discount":
+                    # ✅ CASH ONLY
+                    if p.get("mode") != "Cash at Hotel":
                         continue
-                    else:
-                        bucket = "online"
 
                     events.append({
                         "date": dt.strftime("%Y-%m-%d"),
                         "hour": dt.hour,
-                        "mode": bucket,
+                        "mode": "cash",
                         "amt": amt
                     })
 
@@ -251,17 +244,12 @@ async def process_property(P, TF, TT, HF, HT):
                 detail_cache[booking_no] = res
                 return res
 
-        # ===== DATE MAP =====
+        # ===== DATE MAP CASH ONLY =====
         date_map = {}
 
         d = tf_dt
         while d <= tt_dt:
-            date_map[d] = {
-                "cash": 0.0,
-                "qr": 0.0,
-                "online": 0.0,
-                "total": 0.0
-            }
+            date_map[d] = {"cash": 0.0}
             d += timedelta(days=1)
 
         offset = 0
@@ -278,7 +266,6 @@ async def process_property(P, TF, TT, HF, HT):
                 break
 
             tasks = []
-            mapping = []
 
             for b in bookings.values():
 
@@ -291,7 +278,6 @@ async def process_property(P, TF, TT, HF, HT):
                     continue
 
                 tasks.append(limited_detail_call(booking_no))
-                mapping.append(b)
 
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -311,10 +297,7 @@ async def process_property(P, TF, TT, HF, HT):
                         continue
 
                     amt = float(ev["amt"])
-                    mode = ev["mode"]
-
-                    date_map[d_dt][mode] += amt
-                    date_map[d_dt]["total"] += amt
+                    date_map[d_dt]["cash"] += amt
 
             if len(data.get("bookingIds", [])) < 100:
                 break
@@ -322,6 +305,7 @@ async def process_property(P, TF, TT, HF, HT):
             offset += 100
 
         return (P["name"], date_map)
+
 
 # ================= RETRY =================
 
@@ -348,7 +332,6 @@ async def run_property_with_retry(P, TF, TT, HF, HT, retries=3):
 async def run_property_limited(P, TF, TT, HF, HT):
 
     async with prop_semaphore:
-
         return await run_property_with_retry(P, TF, TT, HF, HT)
 
 
@@ -363,7 +346,6 @@ async def main():
     global now
     now = datetime.now(IST)
 
-    # ================= DATE RANGE =================
     target_date = (now - timedelta(days=1)).date()
 
     TF = target_date.replace(day=1).strftime("%Y-%m-%d")
@@ -377,7 +359,6 @@ async def main():
     pending = {k: v for k, v in PROPERTIES.items()}
     success_results = {}
 
-    # ================= FETCH DATA =================
     for run_attempt in range(1, MAX_FULL_RUN_RETRIES + 1):
 
         if not pending:
@@ -407,7 +388,6 @@ async def main():
     wb = Workbook()
     wb.remove(wb.active)
 
-    # ===== DATE LIST =====
     start_dt = datetime.strptime(TF, "%Y-%m-%d").date()
     end_dt = datetime.strptime(TT, "%Y-%m-%d").date()
 
@@ -417,10 +397,7 @@ async def main():
         date_list.append(d)
         d += timedelta(days=1)
 
-    consolidated = {
-        d: {"cash": 0.0}
-        for d in date_list
-    }
+    consolidated = {d: {"cash": 0.0} for d in date_list}
 
     thin = Border(
         left=Side(style="thin", color="DDDDDD"),
@@ -447,7 +424,6 @@ async def main():
         for idx, d in enumerate(date_list):
 
             row = date_map.get(d, {"cash":0})
-
             cash = round(row["cash"], 2)
             sum_cash += cash
 
@@ -465,10 +441,7 @@ async def main():
                 cell.border = thin
                 cell.alignment = Alignment(horizontal="center")
 
-        ws.append([
-            "TOTAL",
-            round(sum_cash,2)
-        ])
+        ws.append(["TOTAL", round(sum_cash,2)])
 
         total_row = ws.max_row
 
@@ -479,11 +452,9 @@ async def main():
             cell.alignment = Alignment(horizontal="center")
 
         ws.column_dimensions["A"].width = 15
-        ws.column_dimensions["B"].width = 16
+        ws.column_dimensions["B"].width = 14
 
-        # ===== CHART =====
-        base_chart_row = ws.max_row + 3
-
+        # ===== CHART CASH ONLY =====
         chart = BarChart()
         chart.title = "Cash Trend"
         chart.height = 12
@@ -496,20 +467,7 @@ async def main():
         chart.add_data(data, titles_from_data=True)
         chart.set_categories(cats)
 
-        series = chart.series[0]
-        points = []
-
-        for idx in range(len(date_list)):
-            dp = DataPoint(idx=idx)
-            dp.graphicalProperties.solidFill = get_hour_color(idx)
-            points.append(dp)
-
-        series.dPt = points
-
-        ws.add_chart(chart, f"A{base_chart_row}")
-
-        footer_row = base_chart_row + 20
-        
+        ws.add_chart(chart, f"A{ws.max_row + 3}")
 
 
     # ================= PROPERTY SHEETS =================
@@ -554,11 +512,6 @@ async def main():
         c.font = Font(bold=True, color="FFFFFF")
         c.alignment = Alignment(horizontal="center")
 
-    widths = [10, 28, 16, 18]
-    for i, w in enumerate(widths, start=1):
-        ws.column_dimensions[chr(64+i)].width = w
-
-
     def get_medal(rank):
         if rank == 1:
             return "🥇 Gold"
@@ -567,7 +520,6 @@ async def main():
         if rank == 3:
             return "🥉 Bronze"
         return ""
-
 
     rank = 1
 
@@ -601,7 +553,7 @@ async def main():
 
     await send_telegram_excel_buffer(
         buffer,
-        filename=f"Cash_{display_month}.xlsx",
+        filename=f"Collection_{display_month}.xlsx",
         caption="📊 Date-wise Cash Report"
     )
 
