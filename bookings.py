@@ -149,8 +149,7 @@ async def fetch_bookings_batch(session, offset, f, t, P):
 
 
 # ================= PROCESS PROPERTY =================
-
-  async def process_property(P, TF, TT, HF, HT):
+async def process_property(P, TF, TT, HF, HT):
 
     print(f"PROCESSING → {P['name']}")
 
@@ -217,8 +216,7 @@ async def fetch_bookings_batch(session, offset, f, t, P):
 
             offset += 100
 
-    return (P["name"], hourly)          
-
+    return (P["name"], hourly)
 # ================= RETRY =================
 
 async def run_property_with_retry(P, TF, TT, HF, HT, retries=3):
