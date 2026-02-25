@@ -149,21 +149,33 @@ async def fetch_bookings_batch(session, offset, f, t, P):
 
 
 # ================= PROCESS PROPERTY =================
+
+# ================= PROCESS PROPERTY (FIXED ENGINE) =================
 async def process_property(P, TF, TT, HF, HT):
 
-    print(f"PROCESSING → {P['name']}")
+    print(f"PROCESSING FAST ASYNC → {P['name']}")
 
     tf_dt = datetime.strptime(TF, "%Y-%m-%d").date()
     tt_dt = datetime.strptime(TT, "%Y-%m-%d").date()
 
-    hourly = {
-        h: {"OYO":0,"Walk-in":0,"MMT":0,"BDC":0,"Agoda":0,"CB":0,"TA":0,"OBA":0}
-        for h in range(24)
-    }
-
     async with aiohttp.ClientSession() as session:
 
+        total_rooms = await fetch_total_rooms(session, P)
+        property_details = await fetch_property_details(session, P)
+
+        if total_rooms == 0:
+            raise RuntimeError("TOTAL ROOMS FETCH FAILED")
+
+        detail_semaphore = asyncio.Semaphore(DETAIL_PARALLEL_LIMIT)
+
+        async def limited_detail_call(booking_no):
+            async with detail_semaphore:
+                return await fetch_booking_details(session, P, booking_no)
+
+        all_rows = []
         offset = 0
+
+        upcoming_count = cancelled_count = inhouse_count = checkedout_count = 0
 
         while True:
 
@@ -174,49 +186,109 @@ async def process_property(P, TF, TT, HF, HT):
 
             bookings = data.get("entities", {}).get("bookings", {})
 
+            if not bookings:
+                break
+
+            tasks = []
+            mapping = []
+
             for b in bookings.values():
 
                 status = (b.get("status") or "").strip()
 
-                if status not in ["Checked In", "Checked Out"]:
-                    continue
+                checkin_str = b.get("checkin")
+                checkout_str = b.get("checkout")
 
-                # ================= DATE / TIME EXTRACTION =================
-                raw_time = (
-                    b.get("checkin_time")
-                    or b.get("created_at")
-                    or b.get("checkin")
-                )
-
-                if not raw_time:
+                if not checkin_str or not checkout_str:
                     continue
 
                 try:
-                    if "T" in str(raw_time):
-                        dt = datetime.fromisoformat(str(raw_time).replace("Z", ""))
-                        dt = dt.astimezone(IST)
-                    else:
-                        dt = IST.localize(datetime.strptime(str(raw_time), "%Y-%m-%d"))
+                    ci = datetime.strptime(checkin_str, "%Y-%m-%d")
+                    co = datetime.strptime(checkout_str, "%Y-%m-%d")
                 except:
                     continue
 
-                if not (tf_dt <= dt.date() <= tt_dt):
+                # ================= FILTER TARGET RANGE =================
+                if not (tf_dt <= ci.date() <= tt_dt):
                     continue
 
-                hour = dt.hour
+                # ================= STATUS COUNTS =================
+                if status == "Checked In":
+                    inhouse_count += 1
+                elif status == "Checked Out":
+                    checkedout_count += 1
+                elif status == "Confirm Booking":
+                    upcoming_count += 1
+                elif status == "Cancelled Booking":
+                    cancelled_count += 1
 
-                src = get_booking_source(b)
-                if src not in hourly[hour]:
-                    src = "OBA"
+                if status not in ["Checked In", "Checked Out"]:
+                    continue
 
-                hourly[hour][src] += 1
+                tasks.append(limited_detail_call(b["booking_no"]))
+                mapping.append((b, ci, co))
+
+            # ================= DETAIL CALL =================
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for res, (b, ci, co) in zip(results, mapping):
+
+                if isinstance(res, Exception):
+                    continue
+
+                rooms, cash, qr, online, discount, balance = res
+
+                stay = max((co - ci).days, 1)
+
+                paid = float(b.get("get_amount_paid") or 0)
+                total_amt = paid + float(balance or 0)
+
+                all_rows.append({
+                    "Date": ci.strftime("%Y-%m-%d"),
+                    "Booking Id": b["booking_no"],
+                    "Guest Name": b.get("guest_name"),
+                    "Status": b.get("status"),
+                    "Booking Source": get_booking_source(b),
+                    "Check In": b["checkin"],
+                    "Check Out": b["checkout"],
+                    "Rooms": b.get("no_of_rooms", 1),
+                    "Room Numbers": ", ".join(rooms),
+                    "Amount": round(total_amt / stay, 2),
+                    "Cash": round(cash / stay, 2),
+                    "QR": round(qr / stay, 2),
+                    "Online": round(online / stay, 2),
+                    "Discount": round(discount / stay, 2),
+                    "Balance": round(balance / stay, 2),
+                })
 
             if len(data.get("bookingIds", [])) < 100:
                 break
 
             offset += 100
 
-    return (P["name"], hourly)
+        df = pd.DataFrame(all_rows)
+
+        if df.empty:
+            print(f"⚠️ NO ROWS → {P['name']}")
+
+            df = pd.DataFrame(columns=[
+                "Date","Booking Id","Guest Name","Status","Booking Source",
+                "Check In","Check Out","Rooms","Room Numbers",
+                "Amount","Cash","QR","Online","Discount","Balance"
+            ])
+
+        return (
+            P["name"],
+            df,
+            total_rooms,
+            inhouse_count,
+            checkedout_count,
+            upcoming_count,
+            cancelled_count,
+            property_details,
+            {"cash":0,"qr":0,"online":0}
+        )
+
 # ================= RETRY =================
 
 async def run_property_with_retry(P, TF, TT, HF, HT, retries=3):
