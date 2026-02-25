@@ -325,7 +325,7 @@ async def process_property(P, TF, TT, HF, HT):
 
 # ================= RETRY =================
 
-async def run_property_with_retry(P, TF, TT, HF, HT, retries=3):
+async def run_property_with_retry(P, TF, TT, HF, HT, retries=5):
 
     last_error = None
 
@@ -344,16 +344,7 @@ async def run_property_with_retry(P, TF, TT, HF, HT, retries=3):
 
     raise RuntimeError(f"PROPERTY FAILED → {P['name']}") from last_error
 
-
-async def run_property_limited(P, TF, TT, HF, HT):
-
-    async with prop_semaphore:
-
-        return await run_property_with_retry(P, TF, TT, HF, HT)
-
-
-# ================= MAIN =================
-
+# ================ MAIN =================
 async def main():
 
     print("========================================")
@@ -374,14 +365,17 @@ async def main():
 
     display_month = datetime.strptime(TT, "%Y-%m-%d").strftime("%B %Y")
 
+    # ================= SMART RETRY (ONLY FAILED PROPERTIES) =================
     pending = {k: v for k, v in PROPERTIES.items()}
     success_results = {}
 
-    # ================= FETCH DATA =================
     for run_attempt in range(1, MAX_FULL_RUN_RETRIES + 1):
 
         if not pending:
             break
+
+        print(f"\n🔁 PARTIAL RUN ATTEMPT {run_attempt}/{MAX_FULL_RUN_RETRIES}")
+        print(f"⏳ Pending Properties: {len(pending)}")
 
         tasks = [run_property_limited(P, TF, TT, HF, HT) for P in pending.values()]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -391,17 +385,38 @@ async def main():
         for key, (P, result) in zip(list(pending.keys()), zip(pending.values(), results)):
 
             if isinstance(result, Exception):
+                print(f"❌ FAILED → {P['name']} :: {result}")
                 new_pending[key] = P
                 continue
 
             success_results[key] = result
+            print(f"✅ OK → {P['name']}")
 
         pending = new_pending
 
         if pending:
+
+            if run_attempt == MAX_FULL_RUN_RETRIES:
+
+                failed_names = [p["name"] for p in pending.values()]
+
+                raise RuntimeError(
+                    f"FINAL FAILURE: Properties failed after retries: {failed_names}"
+                )
+
+            print(f"🔁 RETRYING ONLY FAILED PROPERTIES after {FULL_RUN_RETRY_DELAY}s...")
             await asyncio.sleep(FULL_RUN_RETRY_DELAY)
 
+    # ================= FINAL VERIFICATION =================
     valid_results = [success_results[k] for k in PROPERTIES.keys() if k in success_results]
+
+    if len(valid_results) != len(PROPERTIES):
+
+        missing = [PROPERTIES[k]["name"] for k in PROPERTIES.keys() if k not in success_results]
+
+        raise RuntimeError(f"DATA INCOMPLETE: Missing properties: {missing}")
+
+    print("✅ DATA VERIFIED — ALL PROPERTIES PRESENT")
 
     # ================= EXCEL =================
     wb = Workbook()
@@ -497,43 +512,6 @@ async def main():
         ws.column_dimensions["D"].width = 14
         ws.column_dimensions["E"].width = 16
 
-        # ===== CHARTS =====
-        chart_titles = ["Cash", "QR", "Online", "Total"]
-
-        base_chart_row = ws.max_row + 3
-        chart_gap = 22
-
-        for i, col in enumerate(range(2, 6)):
-
-            chart = BarChart()
-            chart.title = f"{chart_titles[i]} Trend"
-            chart.height = 12
-            chart.width = 26
-            chart.legend = None
-
-            data = Reference(ws, min_col=col, min_row=1, max_row=len(date_list)+1)
-            cats = Reference(ws, min_col=1, min_row=2, max_row=len(date_list)+1)
-
-            chart.add_data(data, titles_from_data=True)
-            chart.set_categories(cats)
-
-            series = chart.series[0]
-            points = []
-
-            for idx in range(len(date_list)):
-                dp = DataPoint(idx=idx)
-                dp.graphicalProperties.solidFill = get_hour_color(idx)
-                points.append(dp)
-
-            series.dPt = points
-
-            chart_row = base_chart_row + (i * chart_gap)
-            ws.add_chart(chart, f"A{chart_row}")
-
-        footer_row = base_chart_row + (len(chart_titles) * chart_gap) + 2
-       
-
-
     # ================= PROPERTY SHEETS =================
     for name, date_map in valid_results:
 
@@ -544,11 +522,9 @@ async def main():
             for k in consolidated[d]:
                 consolidated[d][k] += date_map[d][k]
 
-
     # ================= CONSOLIDATED =================
     ws = wb.create_sheet("CONSOLIDATED")
     create_sheet(ws, consolidated)
-
 
     # ================= PROPERTY RANKING =================
     ranking_data = []
@@ -587,7 +563,6 @@ async def main():
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[chr(64+i)].width = w
 
-
     def get_medal(rank):
         if rank == 1:
             return "🥇 Gold"
@@ -596,7 +571,6 @@ async def main():
         if rank == 3:
             return "🥉 Bronze"
         return ""
-
 
     rank = 1
 
@@ -625,7 +599,6 @@ async def main():
 
         rank += 1
 
-
     # ================= SAVE + TELEGRAM =================
     buffer = BytesIO()
     wb.save(buffer)
@@ -638,7 +611,7 @@ async def main():
     )
 
     print("✅ EXCEL SENT SUCCESSFULLY")
-
+            
 # ================= RUN =================
 
 if __name__ == "__main__":
