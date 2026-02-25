@@ -591,13 +591,11 @@ async def main():
             return "🥉 Bronze"
         return ""
 
-
     rank = 1
 
     for idx, p in enumerate(ranking_data):
-
-        badge = "⭐ Top Performer" if rank == 1 else ""
-
+        medal = get_medal(rank)
+    
         ws.append([
             rank,
             p["name"],
@@ -605,8 +603,10 @@ async def main():
             round(p["qr"], 2),
             round(p["online"], 2),
             round(p["total"], 2),
-            f"{get_medal(rank)} {badge}"
+            medal
         ])
+        rank += 1
+
 
         r = ws.max_row
         fill = PatternFill("solid", fgColor=get_hour_color(idx))
@@ -618,69 +618,7 @@ async def main():
             cell.alignment = Alignment(horizontal="center")
 
         rank += 1
-
-        
-    # ================= KPI SUMMARY =================
-
-    total_cash = sum(p["cash"] for p in ranking_data)
-    total_qr = sum(p["qr"] for p in ranking_data)
-    total_online = sum(p["online"] for p in ranking_data)
-    total_revenue = sum(p["total"] for p in ranking_data)
-
-    top_property = ranking_data[0]["name"] if ranking_data else "N/A"
-
-    # best hour from consolidated
-    best_hour = max(consolidated.items(), key=lambda x: x[1]["total"])[0]
-
-    def hour_label(h):
-        start = datetime(2000, 1, 1, h, 0)
-        end = start + timedelta(hours=1)
-        return f"{start.strftime('%I%p').lstrip('0')} - {end.strftime('%I%p').lstrip('0')}"
-
-    ws = wb.create_sheet("KPI SUMMARY")
-
-    ws.column_dimensions["A"].width = 30
-    ws.column_dimensions["B"].width = 25
-
-    title_fill = PatternFill("solid", fgColor="1F4E78")
-
-    ws.merge_cells("A1:B1")
-    cell = ws["A1"]
-    cell.value = "PORTFOLIO KPI SUMMARY"
-    cell.fill = title_fill
-    cell.font = Font(bold=True, color="FFFFFF", size=14)
-    cell.alignment = Alignment(horizontal="center")
-
-    rows = [
-        ("Report Date", display_date),
-        ("Total Properties", len(valid_results)),
-        ("Total Portfolio Revenue", round(total_revenue, 2)),
-        ("Total Cash", round(total_cash, 2)),
-        ("Total QR", round(total_qr, 2)),
-        ("Total Online", round(total_online, 2)),
-        ("Top Performing Property", top_property),
-        ("Best Revenue Hour", hour_label(best_hour)),
-    ]
-
-    row_idx = 3
-
-    for label, value in rows:
-
-        ws.cell(row=row_idx, column=1).value = label
-        ws.cell(row=row_idx, column=2).value = value
-
-        ws.cell(row=row_idx, column=1).font = Font(bold=True)
-
-        fill = PatternFill("solid", fgColor="EEF3FB")
-
-        ws.cell(row=row_idx, column=1).fill = fill
-        ws.cell(row=row_idx, column=2).fill = fill
-
-        row_idx += 1
     
-    
-
-       
 
     buffer = BytesIO()
     wb.save(buffer)
