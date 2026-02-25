@@ -344,6 +344,15 @@ async def run_property_with_retry(P, TF, TT, HF, HT, retries=5):
 
     raise RuntimeError(f"PROPERTY FAILED → {P['name']}") from last_error
 
+
+# ================= PARALLEL LIMITER =================
+
+async def run_property_limited(P, TF, TT, HF, HT):
+
+    async with prop_semaphore:
+        return await run_property_with_retry(P, TF, TT, HF, HT)
+
+
 # ================ MAIN =================
 async def main():
 
