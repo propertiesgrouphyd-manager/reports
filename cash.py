@@ -1,6 +1,6 @@
 # ==============================
 # ULTRA FAST ASYNC MULTI PROPERTY AUTOMATION
-# HOURLY CASH COLLECTION REPORT
+# HOURLY CASH REPORT
 # ==============================
 
 import os
@@ -10,10 +10,12 @@ import aiohttp
 from datetime import datetime, timedelta
 import traceback
 from openpyxl import Workbook
-from openpyxl.styles import PatternFill, Font, Alignment
+from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.chart import BarChart, Reference
+from openpyxl.chart.series import DataPoint
 from io import BytesIO
 import pytz
+
 
 IST = pytz.timezone("Asia/Kolkata")
 now = datetime.now(IST)
@@ -47,10 +49,12 @@ TELEGRAM_CHAT_ID = get_chat_id("6am")
 
 
 async def send_telegram_excel_buffer(buffer, filename, caption=None):
+
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument"
 
     data = aiohttp.FormData()
     data.add_field("chat_id", str(TELEGRAM_CHAT_ID))
+
     if caption:
         data.add_field("caption", caption)
 
@@ -77,21 +81,17 @@ if not PROPERTIES:
     raise RuntimeError("❌ OYO_PROPERTIES secret missing or empty")
 
 
-# ================= COLOR THEME =================
+# ================= COLOR =================
 
 def get_hour_color(hour):
-    """
-    Premium pastel daylight palette (very light, eye-friendly)
-    Night → Morning → Noon → Evening → Night
-    """
 
     palette = [
-        "EEF3FB", "E8F0FA", "E3EDFA", "DEEAFA",  # 12–4 AM
-        "D9F2FF", "DFF7FF", "E6FBFF", "FFF9DB",  # 4–8 AM
-        "FFF4CC", "FFEFB3", "FFE699", "FFDD80",  # 8–12 PM
-        "FFE0CC", "FFD6B3", "FFCC99", "FFC280",  # 12–4 PM
-        "FFD9D9", "FFD1D1", "FFC9C9", "FFC1C1",  # 4–8 PM
-        "F3E5F5", "EDE7F6", "E8EAF6", "E3F2FD"   # 8–12 AM
+        "EEF3FB","E8F0FA","E3EDFA","DEEAFA",
+        "D9F2FF","DFF7FF","E6FBFF","FFF9DB",
+        "FFF4CC","FFEFB3","FFE699","FFDD80",
+        "FFE0CC","FFD6B3","FFCC99","FFC280",
+        "FFD9D9","FFD1D1","FFC9C9","FFC1C1",
+        "F3E5F5","EDE7F6","E8EAF6","E3F2FD"
     ]
 
     return palette[hour % 24]
@@ -121,6 +121,7 @@ async def fetch_booking_details(session, P, booking_no):
     }
 
     for attempt in range(1, 4):
+
         try:
             async with session.get(
                 url,
@@ -160,12 +161,14 @@ async def fetch_booking_details(session, P, booking_no):
                     except Exception:
                         continue
 
-                    bucket = "cash" if p.get("mode") == "Cash at Hotel" else "other"
+                    mode_raw = p.get("mode", "")
+
+                    if mode_raw != "Cash at Hotel":
+                        continue
 
                     events.append({
                         "date": dt.strftime("%Y-%m-%d"),
                         "hour": dt.hour,
-                        "mode": bucket,
                         "amt": amt
                     })
 
@@ -177,7 +180,7 @@ async def fetch_booking_details(session, P, booking_no):
     raise RuntimeError("DETAIL FETCH FAILED")
 
 
-# ================= BATCH FETCH =================
+# ================= FETCH BOOKINGS =================
 
 async def fetch_bookings_batch(session, offset, f, t, P):
 
@@ -234,14 +237,19 @@ async def process_property(P, TF, TT, HF, HT):
         detail_cache = {}
 
         async def limited_detail_call(booking_no):
+
             async with detail_semaphore:
+
                 if booking_no in detail_cache:
                     return detail_cache[booking_no]
+
                 res = await fetch_booking_details(session, P, booking_no)
                 detail_cache[booking_no] = res
+
                 return res
 
-        hourly_cash = {h: 0.0 for h in range(24)}
+
+        hourly_cash = {h: {"cash":0.0} for h in range(24)}
 
         offset = 0
 
@@ -257,20 +265,20 @@ async def process_property(P, TF, TT, HF, HT):
                 break
 
             tasks = []
-            mapping = []
 
             for b in bookings.values():
 
                 status = (b.get("status") or "").strip()
+
                 if status not in ["Checked In", "Checked Out"]:
                     continue
 
                 booking_no = b.get("booking_no")
+
                 if not booking_no:
                     continue
 
                 tasks.append(limited_detail_call(booking_no))
-                mapping.append(b)
 
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -289,8 +297,10 @@ async def process_property(P, TF, TT, HF, HT):
                     if not (tf_dt <= d_dt <= tt_dt):
                         continue
 
-                    if ev["mode"] == "cash":
-                        hourly_cash[ev["hour"]] += float(ev["amt"])
+                    h = ev["hour"]
+                    amt = float(ev["amt"])
+
+                    hourly_cash[h]["cash"] += amt
 
             if len(data.get("bookingIds", [])) < 100:
                 break
@@ -307,17 +317,23 @@ async def run_property_with_retry(P, TF, TT, HF, HT, retries=3):
     last_error = None
 
     for attempt in range(1, retries + 1):
+
         try:
             return await process_property(P, TF, TT, HF, HT)
+
         except Exception as e:
+
             last_error = e
+
             print(f"RETRY {attempt}/{retries} → {P['name']} :: {e}")
+
             await asyncio.sleep(2 + attempt * 2)
 
     raise RuntimeError(f"PROPERTY FAILED → {P['name']}") from last_error
 
 
 async def run_property_limited(P, TF, TT, HF, HT):
+
     async with prop_semaphore:
         return await run_property_with_retry(P, TF, TT, HF, HT)
 
@@ -327,13 +343,12 @@ async def run_property_limited(P, TF, TT, HF, HT):
 async def main():
 
     print("========================================")
-    print(" HOURLY CASH REPORT (PREMIUM)")
+    print(" HOURLY CASH REPORT")
     print("========================================")
 
     global now
     now = datetime.now(IST)
 
-    # ===== TODAY MODE =====
     target_date = (now - timedelta(days=1)).date()
 
     TF = target_date.strftime("%Y-%m-%d")
@@ -342,14 +357,11 @@ async def main():
     HF = (target_date - timedelta(days=30)).strftime("%Y-%m-%d")
     HT = TF
 
-    print("TARGET DATE :", TF)
-
     display_date = datetime.strptime(TF, "%Y-%m-%d").strftime("%d-%m-%Y")
 
     pending = {k: v for k, v in PROPERTIES.items()}
     success_results = {}
 
-    # ================= FETCH DATA =================
     for run_attempt in range(1, MAX_FULL_RUN_RETRIES + 1):
 
         if not pending:
@@ -375,92 +387,77 @@ async def main():
 
     valid_results = [success_results[k] for k in PROPERTIES.keys() if k in success_results]
 
-    if len(valid_results) != len(PROPERTIES):
-        missing = [PROPERTIES[k]["name"] for k in PROPERTIES if k not in success_results]
-        raise RuntimeError(f"DATA INCOMPLETE: Missing properties: {missing}")
-
-    # ================= EXCEL =================
-
-    from openpyxl.styles import Border, Side
-    from openpyxl.chart import BarChart, Reference
-    from openpyxl.chart.series import DataPoint
-
     wb = Workbook()
     wb.remove(wb.active)
 
-    consolidated = {h: 0.0 for h in range(24)}
+    consolidated = {h: {"cash":0.0} for h in range(24)}
 
-    # ================= LABEL =================
+    thin = Border(
+        left=Side(style="thin", color="DDDDDD"),
+        right=Side(style="thin", color="DDDDDD"),
+        top=Side(style="thin", color="DDDDDD"),
+        bottom=Side(style="thin", color="DDDDDD"),
+    )
+
     def hour_label(h):
         start = datetime(2000, 1, 1, h, 0)
         end = start + timedelta(hours=1)
         return f"{start.strftime('%I%p').lstrip('0')} - {end.strftime('%I%p').lstrip('0')}"
 
-    # ================= SHEET BUILDER =================
-    def create_sheet(ws, hourly_cash):
 
-        thin = Border(
-            left=Side(style="thin", color="DDDDDD"),
-            right=Side(style="thin", color="DDDDDD"),
-            top=Side(style="thin", color="DDDDDD"),
-            bottom=Side(style="thin", color="DDDDDD"),
-        )
+    def create_sheet(ws, hourly_cash):
 
         ws.append(["Date", "Time (Hourly)", "Cash"])
 
         header_fill = PatternFill("solid", fgColor="1F4E78")
-        header_font = Font(bold=True, color="FFFFFF", size=13)
 
         for col in range(1, 4):
             c = ws.cell(row=1, column=col)
             c.fill = header_fill
-            c.font = header_font
-            c.alignment = Alignment(horizontal="center", vertical="center")
+            c.font = Font(bold=True, color="FFFFFF")
+            c.alignment = Alignment(horizontal="center")
 
-        total = 0
+        sum_cash = 0
 
-        # ===== HOURLY ROWS =====
         for h in range(24):
 
-            cash = round(hourly_cash.get(h, 0), 2)
-            total += cash
+            cash = round(hourly_cash[h]["cash"], 2)
+            sum_cash += cash
 
-            ws.append([display_date, hour_label(h), cash])
+            ws.append([
+                display_date,
+                hour_label(h),
+                cash
+            ])
 
-            row = ws.max_row
-            fill_color = get_hour_color(h)
+            r = ws.max_row
+            fill = PatternFill("solid", fgColor=get_hour_color(h))
 
-            fill = PatternFill("solid", fgColor=fill_color)
-
-            for col in range(1, 4):
-                cell = ws.cell(row=row, column=col)
+            for c in range(1, 4):
+                cell = ws.cell(row=r, column=c)
                 cell.fill = fill
-                cell.font = Font(bold=True, color="000000")
-                cell.alignment = Alignment(horizontal="center", vertical="center")
                 cell.border = thin
+                cell.alignment = Alignment(horizontal="center")
 
-        # ===== TOTAL ROW =====
-        ws.append(["", "TOTAL", round(total, 2)])
+        ws.append(["", "TOTAL", round(sum_cash,2)])
+
         total_row = ws.max_row
 
-        for col in range(1, 4):
-            c = ws.cell(row=total_row, column=col)
-            c.fill = PatternFill("solid", fgColor="000000")
-            c.font = Font(bold=True, color="FFFFFF", size=12)
-            c.alignment = Alignment(horizontal="center", vertical="center")
-            c.border = thin
+        for c in range(1, 4):
+            cell = ws.cell(row=total_row, column=c)
+            cell.fill = PatternFill("solid", fgColor="000000")
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.alignment = Alignment(horizontal="center")
 
         ws.column_dimensions["A"].width = 15
         ws.column_dimensions["B"].width = 18
-        ws.column_dimensions["C"].width = 12
+        ws.column_dimensions["C"].width = 14
 
         # ===== CHART =====
         chart = BarChart()
-        chart.title = "Hourly Cash Collection"
+        chart.title = "Hourly Cash"
         chart.height = 12
         chart.width = 26
-        chart.style = 10
-
         chart.legend = None
 
         data = Reference(ws, min_col=3, min_row=1, max_row=25)
@@ -469,47 +466,119 @@ async def main():
         chart.add_data(data, titles_from_data=True)
         chart.set_categories(cats)
 
-        # ===== MATCH BAR COLORS =====
         series = chart.series[0]
         points = []
 
-        for i in range(24):
-            dp = DataPoint(idx=i)
-            dp.graphicalProperties.solidFill = get_hour_color(i)
+        for h in range(24):
+            dp = DataPoint(idx=h)
+            dp.graphicalProperties.solidFill = get_hour_color(h)
             points.append(dp)
 
         series.dPt = points
 
-        # ===== PLACE CHART BELOW TABLE =====
-        chart_row = ws.max_row + 2
+        chart_row = ws.max_row + 3
         ws.add_chart(chart, f"A{chart_row}")
 
-        # ===== FOOTER =====
         footer_row = chart_row + 20
         ws.cell(row=footer_row, column=1).value = "📊 Excel bar chart auto-generated"
         ws.cell(row=footer_row, column=1).font = Font(bold=True, size=11)
 
+
     # ================= PROPERTY SHEETS =================
+
     for name, hourly_cash in valid_results:
 
         ws = wb.create_sheet(name[:31])
         create_sheet(ws, hourly_cash)
 
         for h in range(24):
-            consolidated[h] += hourly_cash.get(h, 0)
+            consolidated[h]["cash"] += hourly_cash[h]["cash"]
+
 
     # ================= CONSOLIDATED =================
+
     ws = wb.create_sheet("CONSOLIDATED")
     create_sheet(ws, consolidated)
 
-    # ================= SAVE + SEND =================
+
+    # ================= PROPERTY RANKING =================
+
+    ranking_data = []
+
+    for name, hourly_cash in valid_results:
+
+        total_cash = sum(v["cash"] for v in hourly_cash.values())
+
+        ranking_data.append({
+            "name": name,
+            "cash": total_cash
+        })
+
+    ranking_data.sort(key=lambda x: x["cash"], reverse=True)
+
+    ws = wb.create_sheet("PROPERTY RANKING")
+
+    headers = ["Rank", "Property", "Cash", "Badge"]
+    ws.append(headers)
+
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+
+    for col in range(1, 5):
+        c = ws.cell(row=1, column=col)
+        c.fill = header_fill
+        c.font = Font(bold=True, color="FFFFFF")
+        c.alignment = Alignment(horizontal="center")
+
+    widths = [10, 28, 16, 18]
+
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[chr(64+i)].width = w
+
+
+    def get_medal(rank):
+        if rank == 1:
+            return "🥇 Gold"
+        if rank == 2:
+            return "🥈 Silver"
+        if rank == 3:
+            return "🥉 Bronze"
+        return ""
+
+
+    rank = 1
+
+    for idx, p in enumerate(ranking_data):
+
+        medal = get_medal(rank)
+
+        ws.append([
+            rank,
+            p["name"],
+            round(p["cash"], 2),
+            medal
+        ])
+
+        r = ws.max_row
+        fill = PatternFill("solid", fgColor=get_hour_color(idx))
+
+        for c in range(1, 5):
+            cell = ws.cell(row=r, column=c)
+            cell.fill = fill
+            cell.border = thin
+            cell.alignment = Alignment(horizontal="center")
+
+        rank += 1
+
+
+    # ================= SAVE =================
+
     buffer = BytesIO()
     wb.save(buffer)
     buffer.seek(0)
 
     await send_telegram_excel_buffer(
         buffer,
-        filename=f"Cash_Collection_{display_date}.xlsx",
+        filename=f"Cash_{display_date}.xlsx",
         caption="📊 Hourly Cash Report"
     )
 
@@ -519,8 +588,11 @@ async def main():
 # ================= RUN =================
 
 if __name__ == "__main__":
+
     try:
         asyncio.run(main())
-    except Exception as e:
+
+    except Exception:
+
         print("SCRIPT CRASHED")
         traceback.print_exc()
