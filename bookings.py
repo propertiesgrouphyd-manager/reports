@@ -255,6 +255,37 @@ async def run_property_limited(P, TF, TT, HF, HT):
         return await run_property_with_retry(P, TF, TT, HF, HT)
 
 
+
+def autofit_columns(ws):
+
+    for column_cells in ws.columns:
+
+        max_length = 0
+        col_letter = column_cells[0].column_letter
+
+        for cell in column_cells:
+            try:
+                if cell.value:
+                    max_length = max(max_length, len(str(cell.value)))
+            except:
+                pass
+
+        # ===== PREMIUM SPACING =====
+        adjusted_width = (max_length * 1.4) + 4   # extra breathing space
+
+        # ===== MINIMUM WIDTH RULES =====
+        if col_letter == "A":     # Date / Rank columns
+            adjusted_width = max(adjusted_width, 16)
+
+        if col_letter == "B":     # Property name usually
+            adjusted_width = max(adjusted_width, 28)
+
+        if col_letter in ["C","D","E","F","G","H","I","J"]:
+            adjusted_width = max(adjusted_width, 14)
+
+        ws.column_dimensions[col_letter].width = min(adjusted_width, 45)
+
+
 # ================= MAIN =================
 
 async def main():
@@ -397,7 +428,7 @@ async def main():
         start_chart_row = ws.max_row + 3
         chart_gap = 22
 
-        for i,col in enumerate(range(2,10)):
+        for i,col in enumerate(range(2,11)):
 
             chart = BarChart()
             chart.height = 12
@@ -433,6 +464,7 @@ async def main():
 
         ws = wb.create_sheet(name[:31])
         create_sheet(ws,date_map)
+        autofit_columns(ws)
 
         total_prop = 0
 
@@ -452,6 +484,7 @@ async def main():
 
     ws = wb.create_sheet("CONSOLIDATED")
     create_sheet(ws,consolidated)
+    autofit_columns(ws)
 
     # ================= PROPERTY RANKING =================
 
@@ -497,6 +530,7 @@ async def main():
             cell.alignment = Alignment(horizontal="center")
 
         rank+=1
+    autofit_columns(ws)
 
     # ================= SAVE =================
 
