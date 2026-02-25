@@ -306,7 +306,7 @@ async def process_property(P, TF, TT, HF, HT):
 
             bookings = data.get("entities", {}).get("bookings", {})
             if not bookings:
-                raise RuntimeError("BOOKINGS EMPTY")
+                break
 
             tasks = []
             mapping = []
