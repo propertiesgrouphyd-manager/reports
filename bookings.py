@@ -149,22 +149,18 @@ async def fetch_bookings_batch(session, offset, f, t, P):
 
 
 # ================= PROCESS PROPERTY =================
-async def process_property(P, TF, TT, HF, HT):
+
+  async def process_property(P, TF, TT, HF, HT):
 
     print(f"PROCESSING → {P['name']}")
 
     tf_dt = datetime.strptime(TF, "%Y-%m-%d").date()
     tt_dt = datetime.strptime(TT, "%Y-%m-%d").date()
 
-    # ===== DATE MAP =====
-    date_map = {}
-
-    d = tf_dt
-    while d <= tt_dt:
-        date_map[d] = {
-            "OYO":0,"Walk-in":0,"MMT":0,"BDC":0,"Agoda":0,"CB":0,"TA":0,"OBA":0
-        }
-        d += timedelta(days=1)
+    hourly = {
+        h: {"OYO":0,"Walk-in":0,"MMT":0,"BDC":0,"Agoda":0,"CB":0,"TA":0,"OBA":0}
+        for h in range(24)
+    }
 
     async with aiohttp.ClientSession() as session:
 
@@ -182,50 +178,46 @@ async def process_property(P, TF, TT, HF, HT):
             for b in bookings.values():
 
                 status = (b.get("status") or "").strip()
+
                 if status not in ["Checked In", "Checked Out"]:
                     continue
 
-                # ================= DATE EXTRACTION (ROBUST) =================
+                # ================= DATE / TIME EXTRACTION =================
                 raw_time = (
                     b.get("checkin_time")
-                    or b.get("checkin")
-                    or b.get("checkin_date")
                     or b.get("created_at")
+                    or b.get("checkin")
                 )
 
                 if not raw_time:
                     continue
 
-                d_dt = None
-
                 try:
                     if "T" in str(raw_time):
                         dt = datetime.fromisoformat(str(raw_time).replace("Z", ""))
                         dt = dt.astimezone(IST)
-                        d_dt = dt.date()
                     else:
-                        d_dt = datetime.strptime(str(raw_time), "%Y-%m-%d").date()
+                        dt = IST.localize(datetime.strptime(str(raw_time), "%Y-%m-%d"))
                 except:
                     continue
 
-                if not (tf_dt <= d_dt <= tt_dt):
+                if not (tf_dt <= dt.date() <= tt_dt):
                     continue
 
+                hour = dt.hour
+
                 src = get_booking_source(b)
-                if src not in date_map[d_dt]:
+                if src not in hourly[hour]:
                     src = "OBA"
 
-                date_map[d_dt][src] += 1
+                hourly[hour][src] += 1
 
             if len(data.get("bookingIds", [])) < 100:
                 break
 
             offset += 100
 
-    return (P["name"], date_map)
-                
-
-            
+    return (P["name"], hourly)          
 
 # ================= RETRY =================
 
