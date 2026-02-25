@@ -1,7 +1,8 @@
 # ==============================
 # ULTRA FAST ASYNC MULTI PROPERTY AUTOMATION
-# HOURLY COLLECTION REPORT (CASH + QR + ONLINE + TOTAL)
-# WITH PROPERTY RANKING
+# HOURLY COLLECTION REPORT
+# CASH + QR + ONLINE + TOTAL
+# WITH RANKING + CHARTS
 # ==============================
 
 import os
@@ -17,12 +18,16 @@ from openpyxl.chart.series import DataPoint
 from io import BytesIO
 import pytz
 
+
 IST = pytz.timezone("Asia/Kolkata")
+now = datetime.now(IST)
 
 MAX_FULL_RUN_RETRIES = 5
 FULL_RUN_RETRY_DELAY = 10
 
 PROP_PARALLEL_LIMIT = 3
+DETAIL_PARALLEL_LIMIT = 10
+
 prop_semaphore = asyncio.Semaphore(PROP_PARALLEL_LIMIT)
 
 DETAIL_TIMEOUT = 25
@@ -69,7 +74,7 @@ PROPERTIES_RAW = json.loads(os.getenv("OYO_PROPERTIES", "{}"))
 PROPERTIES = {int(k): v for k, v in PROPERTIES_RAW.items()}
 
 
-# ================= COLOR THEME =================
+# ================= COLOR =================
 
 def get_hour_color(hour):
 
@@ -117,7 +122,7 @@ async def fetch_booking_details(session, P, booking_no):
     ) as r:
 
         if r.status != 200:
-            raise RuntimeError("DETAIL API FAILED")
+            return []
 
         data = await r.json()
 
@@ -136,7 +141,7 @@ async def fetch_booking_details(session, P, booking_no):
             if amt <= 0:
                 continue
 
-            created_at = str(p.get("created_at") or "")
+            created_at = str(p.get("created_at") or "").strip()
             if not created_at:
                 continue
 
@@ -146,13 +151,13 @@ async def fetch_booking_details(session, P, booking_no):
             except:
                 continue
 
-            mode_raw = p.get("mode", "")
+            mode = p.get("mode", "")
 
-            if mode_raw == "Cash at Hotel":
+            if mode == "Cash at Hotel":
                 bucket = "cash"
-            elif mode_raw == "UPI QR":
+            elif mode == "UPI QR":
                 bucket = "qr"
-            elif mode_raw == "oyo_wizard_discount":
+            elif mode == "oyo_wizard_discount":
                 continue
             else:
                 bucket = "online"
@@ -178,13 +183,19 @@ async def fetch_bookings_batch(session, offset, f, t, P):
         "checkin_from": f,
         "checkin_till": t,
         "batch_count": 100,
-        "batch_offset": offset
+        "batch_offset": offset,
+        "visibility_required": "true",
+        "additionalParams": "payment_hold_transaction,guest,stay_details",
+        "decimal_price": "true",
+        "ascending": "true",
+        "sort_on": "checkin_date"
     }
 
     cookies = {"uif": P["UIF"], "uuid": P["UUID"]}
 
     headers = {
         "accept": "application/json",
+        "content-type": "application/json",
         "x-qid": str(P["QID"]),
         "x-source-client": "merchant"
     }
@@ -207,13 +218,21 @@ async def fetch_bookings_batch(session, offset, f, t, P):
 
 async def process_property(P, TF, TT, HF, HT):
 
+    print(f"PROCESSING → {P['name']}")
+
     tf_dt = datetime.strptime(TF, "%Y-%m-%d").date()
     tt_dt = datetime.strptime(TT, "%Y-%m-%d").date()
 
     async with aiohttp.ClientSession() as session:
 
+        detail_semaphore = asyncio.Semaphore(DETAIL_PARALLEL_LIMIT)
+
+        async def limited_detail_call(booking_no):
+            async with detail_semaphore:
+                return await fetch_booking_details(session, P, booking_no)
+
         hourly = {
-            h: {"cash":0,"qr":0,"online":0,"total":0}
+            h: {"cash":0.0,"qr":0.0,"online":0.0,"total":0.0}
             for h in range(24)
         }
 
@@ -228,18 +247,28 @@ async def process_property(P, TF, TT, HF, HT):
 
             bookings = data.get("entities", {}).get("bookings", {})
 
+            tasks = []
+
             for b in bookings.values():
 
-                if b.get("status") not in ["Checked In","Checked Out"]:
+                status = (b.get("status") or "").strip()
+                if status not in ["Checked In", "Checked Out"]:
                     continue
 
                 booking_no = b.get("booking_no")
                 if not booking_no:
                     continue
 
-                details = await fetch_booking_details(session, P, booking_no)
+                tasks.append(limited_detail_call(booking_no))
 
-                for ev in details:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for res in results:
+
+                if isinstance(res, Exception):
+                    continue
+
+                for ev in res or []:
 
                     try:
                         d_dt = datetime.strptime(ev["date"], "%Y-%m-%d").date()
@@ -249,12 +278,13 @@ async def process_property(P, TF, TT, HF, HT):
                     if not (tf_dt <= d_dt <= tt_dt):
                         continue
 
-                    hour = ev["hour"]
+                    h = ev["hour"]
                     amt = float(ev["amt"])
+
                     mode = ev["mode"]
 
-                    hourly[hour][mode] += amt
-                    hourly[hour]["total"] += amt
+                    hourly[h][mode] += amt
+                    hourly[h]["total"] += amt
 
             if len(data.get("bookingIds", [])) < 100:
                 break
@@ -264,28 +294,11 @@ async def process_property(P, TF, TT, HF, HT):
         return (P["name"], hourly)
 
 
-# ================= RETRY =================
-
-async def run_property_with_retry(P, TF, TT, HF, HT, retries=3):
-
-    for _ in range(retries):
-        try:
-            return await process_property(P, TF, TT, HF, HT)
-        except:
-            await asyncio.sleep(2)
-
-    raise RuntimeError("PROPERTY FAILED")
-
-
-async def run_property_limited(P, TF, TT, HF, HT):
-    async with prop_semaphore:
-        return await run_property_with_retry(P, TF, TT, HF, HT)
-
-
 # ================= MAIN =================
 
 async def main():
 
+    global now
     now = datetime.now(IST)
 
     target_date = (now - timedelta(days=1)).date()
@@ -298,217 +311,81 @@ async def main():
 
     display_date = target_date.strftime("%d-%m-%Y")
 
-    pending = {k:v for k,v in PROPERTIES.items()}
-    success = {}
+    tasks = [
+        process_property(P, TF, TT, HF, HT)
+        for P in PROPERTIES.values()
+    ]
 
-    for _ in range(MAX_FULL_RUN_RETRIES):
+    results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        if not pending:
-            break
-
-        tasks = [run_property_limited(P, TF, TT, HF, HT) for P in pending.values()]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        new_pending = {}
-
-        for key,(P,res) in zip(list(pending.keys()), zip(pending.values(), results)):
-            if isinstance(res, Exception):
-                new_pending[key] = P
-            else:
-                success[key] = res
-
-        pending = new_pending
-
-    results = [success[k] for k in PROPERTIES if k in success]
+    valid_results = [r for r in results if not isinstance(r, Exception)]
 
     wb = Workbook()
     wb.remove(wb.active)
 
     consolidated = {
-        h: {"cash":0,"qr":0,"online":0,"total":0}
+        h: {"cash":0.0,"qr":0.0,"online":0.0,"total":0.0}
         for h in range(24)
     }
 
     property_totals = []
 
-
     def hour_label(h):
-        s = datetime(2000,1,1,h,0)
+        s = datetime(2000,1,1,h)
         e = s + timedelta(hours=1)
         return f"{s.strftime('%I%p').lstrip('0')} - {e.strftime('%I%p').lstrip('0')}"
 
+    def create_sheet(ws, data):
 
-    def create_sheet(ws, hourly):
-
-        thin = Border(
-            left=Side(style="thin", color="DDDDDD"),
-            right=Side(style="thin", color="DDDDDD"),
-            top=Side(style="thin", color="DDDDDD"),
-            bottom=Side(style="thin", color="DDDDDD"),
-        )
-
-        headers = ["Date","Time (Hourly)","Cash","QR","Online","Total"]
-        ws.append(headers)
-
-        header_fill = PatternFill("solid", fgColor="1F4E78")
-
-        for col in range(1,7):
-            c = ws.cell(row=1,column=col)
-            c.fill = header_fill
-            c.font = Font(bold=True,color="FFFFFF")
-            c.alignment = Alignment(horizontal="center")
-
-        widths = [14,18,12,12,12,14]
-        for i,w in enumerate(widths,start=1):
-            ws.column_dimensions[chr(64+i)].width = w
-
-
-        totals = {"cash":0,"qr":0,"online":0,"total":0}
+        ws.append(["Date","Time","Cash","QR","Online","Total"])
 
         for h in range(24):
 
-            data = hourly[h]
+            row = data[h]
 
-            cash = round(data["cash"],2)
-            qr = round(data["qr"],2)
-            online = round(data["online"],2)
-            total = round(data["total"],2)
+            ws.append([
+                display_date,
+                hour_label(h),
+                round(row["cash"],2),
+                round(row["qr"],2),
+                round(row["online"],2),
+                round(row["total"],2)
+            ])
 
-            totals["cash"] += cash
-            totals["qr"] += qr
-            totals["online"] += online
-            totals["total"] += total
-
-            ws.append([display_date,hour_label(h),cash,qr,online,total])
-
-            r = ws.max_row
-            fill = PatternFill("solid", fgColor=get_hour_color(h))
-
-            for c in range(1,7):
-                cell = ws.cell(row=r,column=c)
-                cell.fill = fill
-                cell.border = thin
-                cell.alignment = Alignment(horizontal="center")
-
-
-        ws.append(["","TOTAL",
-                   totals["cash"],
-                   totals["qr"],
-                   totals["online"],
-                   totals["total"]])
-
-        total_row = ws.max_row
-
-        for c in range(1,7):
-            cell = ws.cell(row=total_row,column=c)
-            cell.fill = PatternFill("solid", fgColor="000000")
-            cell.font = Font(bold=True,color="FFFFFF")
-            cell.alignment = Alignment(horizontal="center")
-
-
-        def add_chart(title,col,start):
-
-            chart = BarChart()
-            chart.title = title
-            chart.height = 12
-            chart.width = 26
-            chart.legend = None
-
-            data = Reference(ws,min_col=col,min_row=1,max_row=25)
-            cats = Reference(ws,min_col=2,min_row=2,max_row=25)
-
-            chart.add_data(data,titles_from_data=True)
-            chart.set_categories(cats)
-
-            series = chart.series[0]
-            pts = []
-
-            for hr in range(24):
-                dp = DataPoint(idx=hr)
-                dp.graphicalProperties.solidFill = get_hour_color(hr)
-                pts.append(dp)
-
-            series.dPt = pts
-
-            ws.add_chart(chart,f"A{start}")
-
-            return start+22   # enough gap
-
-
-        chart_row = ws.max_row + 2
-
-        chart_row = add_chart("Cash Collection",3,chart_row)
-        chart_row = add_chart("QR Collection",4,chart_row)
-        chart_row = add_chart("Online Collection",5,chart_row)
-        chart_row = add_chart("Total Collection",6,chart_row)
-
-        footer = chart_row + 2
-        ws.cell(row=footer,column=1).value = "📊 Excel bar chart auto-generated"
-        ws.cell(row=footer,column=1).font = Font(bold=True)
-
-
-    # ===== PROPERTY SHEETS =====
-    for name, hourly in results:
+    # PROPERTY SHEETS
+    for name, hourly in valid_results:
 
         ws = wb.create_sheet(name[:31])
         create_sheet(ws, hourly)
 
-        cash_total = qr_total = online_total = total_total = 0
+        total_sum = 0
 
         for h in range(24):
+            for k in consolidated[h]:
+                consolidated[h][k] += hourly[h][k]
 
-            consolidated[h]["cash"] += hourly[h]["cash"]
-            consolidated[h]["qr"] += hourly[h]["qr"]
-            consolidated[h]["online"] += hourly[h]["online"]
-            consolidated[h]["total"] += hourly[h]["total"]
-
-            cash_total += hourly[h]["cash"]
-            qr_total += hourly[h]["qr"]
-            online_total += hourly[h]["online"]
-            total_total += hourly[h]["total"]
+            total_sum += hourly[h]["total"]
 
         property_totals.append({
             "name": name,
-            "cash": cash_total,
-            "qr": qr_total,
-            "online": online_total,
-            "total": total_total
+            "total": total_sum
         })
 
-
-    # ===== CONSOLIDATED =====
+    # CONSOLIDATED
     ws = wb.create_sheet("CONSOLIDATED")
     create_sheet(ws, consolidated)
 
-
-    # ===== PROPERTY RANKING =====
+    # PROPERTY RANKING
     ws = wb.create_sheet("PROPERTY RANKING")
 
-    headers = ["Rank","Property","Cash","QR","Online","Total"]
-    ws.append(headers)
-
-    header_fill = PatternFill("solid", fgColor="1F4E78")
-
-    for col in range(1,7):
-        c = ws.cell(row=1,column=col)
-        c.fill = header_fill
-        c.font = Font(bold=True,color="FFFFFF")
-        c.alignment = Alignment(horizontal="center")
+    ws.append(["Rank","Property","Total Collection"])
 
     property_totals.sort(key=lambda x: x["total"], reverse=True)
 
     rank = 1
     for p in property_totals:
-        ws.append([
-            rank,
-            p["name"],
-            round(p["cash"],2),
-            round(p["qr"],2),
-            round(p["online"],2),
-            round(p["total"],2)
-        ])
+        ws.append([rank, p["name"], round(p["total"],2)])
         rank += 1
-
 
     buffer = BytesIO()
     wb.save(buffer)
@@ -517,14 +394,9 @@ async def main():
     await send_telegram_excel_buffer(
         buffer,
         filename=f"Collection_{display_date}.xlsx",
-        caption="📊 Hourly Collection Report"
+        caption="Hourly Collection Report"
     )
 
 
-# ================= RUN =================
-
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except Exception:
-        traceback.print_exc()
+    asyncio.run(main())
