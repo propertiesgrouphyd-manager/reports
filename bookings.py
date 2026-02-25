@@ -149,7 +149,6 @@ async def fetch_bookings_batch(session, offset, f, t, P):
 
 
 # ================= PROCESS PROPERTY =================
-
 async def process_property(P, TF, TT, HF, HT):
 
     print(f"PROCESSING → {P['name']}")
@@ -157,10 +156,15 @@ async def process_property(P, TF, TT, HF, HT):
     tf_dt = datetime.strptime(TF, "%Y-%m-%d").date()
     tt_dt = datetime.strptime(TT, "%Y-%m-%d").date()
 
-    hourly = {
-        h: {"OYO":0,"Walk-in":0,"MMT":0,"BDC":0,"Agoda":0,"CB":0,"TA":0,"OBA":0}
-        for h in range(24)
-    }
+    # ===== DATE MAP =====
+    date_map = {}
+
+    d = tf_dt
+    while d <= tt_dt:
+        date_map[d] = {
+            "OYO":0,"Walk-in":0,"MMT":0,"BDC":0,"Agoda":0,"CB":0,"TA":0,"OBA":0
+        }
+        d += timedelta(days=1)
 
     async with aiohttp.ClientSession() as session:
 
@@ -181,44 +185,29 @@ async def process_property(P, TF, TT, HF, HT):
                 if status not in ["Checked In", "Checked Out"]:
                     continue
 
-                # ================= TIME FIX =================
-                dt = None
-
-                # Try checkin_time first
-                raw_time = b.get("checkin_time") or b.get("created_at")
-
-                if raw_time:
-                    try:
-                        dt = datetime.fromisoformat(str(raw_time).replace("Z", ""))
-                        dt = dt.astimezone(IST)
-                    except:
-                        dt = None
-
-                # Fallback to checkin date if time missing
-                if not dt:
-                    try:
-                        d = datetime.strptime(b.get("checkin"), "%Y-%m-%d")
-                        dt = IST.localize(d)
-                    except:
-                        continue
-
-                if not (tf_dt <= dt.date() <= tt_dt):
+                checkin_str = b.get("checkin")
+                if not checkin_str:
                     continue
 
-                hour = dt.hour
+                try:
+                    d_dt = datetime.strptime(checkin_str, "%Y-%m-%d").date()
+                except:
+                    continue
+
+                if not (tf_dt <= d_dt <= tt_dt):
+                    continue
 
                 src = get_booking_source(b)
-                if src not in hourly[hour]:
+                if src not in date_map[d_dt]:
                     src = "OBA"
 
-                hourly[hour][src] += 1
+                date_map[d_dt][src] += 1
 
             if len(data.get("bookingIds", [])) < 100:
                 break
-
             offset += 100
 
-    return (P["name"], hourly)
+    return (P["name"], date_map)
 
             
 
@@ -229,7 +218,7 @@ async def run_property_with_retry(P, TF, TT, HF, HT, retries=3):
     for _ in range(retries):
         try:
             return await process_property(P, TF, TT, HF, HT)
-        except:
+        xcept:
             await asyncio.sleep(2)
 
     raise RuntimeError("PROPERTY FAILED")
@@ -241,23 +230,24 @@ async def run_property_limited(P, TF, TT, HF, HT):
 
 
 # ================= MAIN =================
-
 async def main():
 
     now = datetime.now(IST)
     target_date = (now - timedelta(days=1)).date()
 
-    TF = target_date.strftime("%Y-%m-%d")
-    TT = TF
+    # ================= DATE RANGE =================
+    TF = target_date.replace(day=1).strftime("%Y-%m-%d")
+    TT = target_date.strftime("%Y-%m-%d")
 
-    HF = (target_date - timedelta(days=30)).strftime("%Y-%m-%d")
-    HT = TF
+    HF = (target_date - timedelta(days=120)).strftime("%Y-%m-%d")
+    HT = TT
 
-    display_date = target_date.strftime("%d-%m-%Y")
+    display_month = target_date.strftime("%B %Y")
 
-    pending = {k:v for k,v in PROPERTIES.items()}
+    pending = {k: v for k, v in PROPERTIES.items()}
     success = {}
 
+    # ================= FETCH =================
     for _ in range(MAX_FULL_RUN_RETRIES):
 
         if not pending:
@@ -268,7 +258,8 @@ async def main():
 
         new_pending = {}
 
-        for key,(P,res) in zip(list(pending.keys()), zip(pending.values(), results)):
+        for key, (P, res) in zip(list(pending.keys()), zip(pending.values(), results)):
+
             if isinstance(res, Exception):
                 new_pending[key] = P
             else:
@@ -278,38 +269,39 @@ async def main():
 
     results = [success[k] for k in PROPERTIES if k in success]
 
+    # ================= DATE LIST =================
+    start_dt = datetime.strptime(TF, "%Y-%m-%d").date()
+    end_dt = datetime.strptime(TT, "%Y-%m-%d").date()
+
+    date_list = []
+    d = start_dt
+    while d <= end_dt:
+        date_list.append(d)
+        d += timedelta(days=1)
+
+    # ================= EXCEL =================
     wb = Workbook()
     wb.remove(wb.active)
 
     consolidated = {
-        h: {"OYO":0,"Walk-in":0,"MMT":0,"BDC":0,"Agoda":0,"CB":0,"TA":0,"OBA":0}
-        for h in range(24)
+        d: {"OYO":0,"Walk-in":0,"MMT":0,"BDC":0,"Agoda":0,"CB":0,"TA":0,"OBA":0}
+        for d in date_list
     }
 
     property_totals = []
 
-
-    # ================= LABEL =================
-
-    def hour_label(h):
-        s = datetime(2000,1,1,h,0)
-        e = s + timedelta(hours=1)
-        return f"{s.strftime('%I%p').lstrip('0')} - {e.strftime('%I%p').lstrip('0')}"
-
+    thin = Border(
+        left=Side(style="thin", color="DDDDDD"),
+        right=Side(style="thin", color="DDDDDD"),
+        top=Side(style="thin", color="DDDDDD"),
+        bottom=Side(style="thin", color="DDDDDD"),
+    )
 
     # ================= SHEET BUILDER =================
-
-    def create_sheet(ws, hourly_data):
-
-        thin = Border(
-            left=Side(style="thin", color="DDDDDD"),
-            right=Side(style="thin", color="DDDDDD"),
-            top=Side(style="thin", color="DDDDDD"),
-            bottom=Side(style="thin", color="DDDDDD"),
-        )
+    def create_sheet(ws, date_map):
 
         headers = [
-            "Date","Time (Hourly)",
+            "Date",
             "OYO","Walk-in","MMT","BDC","Agoda","CB","TA","OBA","Total"
         ]
 
@@ -317,21 +309,21 @@ async def main():
 
         header_fill = PatternFill("solid", fgColor="1F4E78")
 
-        for col in range(1,len(headers)+1):
-            c = ws.cell(row=1,column=col)
+        for col in range(1, len(headers)+1):
+            c = ws.cell(row=1, column=col)
             c.fill = header_fill
-            c.font = Font(bold=True,color="FFFFFF")
-            c.alignment = Alignment(horizontal="center", vertical="center")
+            c.font = Font(bold=True, color="FFFFFF")
+            c.alignment = Alignment(horizontal="center")
 
-        widths = [14,18,10,10,10,10,10,10,10,10,12]
-        for i,w in enumerate(widths, start=1):
+        widths = [14,10,10,10,10,10,10,10,10,12]
+        for i, w in enumerate(widths, start=1):
             ws.column_dimensions[chr(64+i)].width = w
 
         totals = [0]*8
 
-        for h in range(24):
+        for idx, d in enumerate(date_list):
 
-            row = hourly_data[h]
+            row = date_map[d]
 
             values = [
                 row["OYO"],row["Walk-in"],row["MMT"],row["BDC"],
@@ -340,41 +332,39 @@ async def main():
 
             total = sum(values)
 
-            for i,v in enumerate(values):
+            for i, v in enumerate(values):
                 totals[i] += v
 
             ws.append([
-                display_date,
-                hour_label(h),
+                d.strftime("%d-%m-%Y"),
                 *values,
                 total
             ])
 
             r = ws.max_row
-            fill = PatternFill("solid", fgColor=get_hour_color(h))
+            fill = PatternFill("solid", fgColor=get_hour_color(idx))
 
-            for c in range(1,len(headers)+1):
-                cell = ws.cell(row=r,column=c)
+            for c in range(1, len(headers)+1):
+                cell = ws.cell(row=r, column=c)
                 cell.fill = fill
                 cell.border = thin
                 cell.alignment = Alignment(horizontal="center")
 
-        # TOTAL ROW
-        ws.append(["","TOTAL",*totals,sum(totals)])
+        # ===== TOTAL ROW =====
+        ws.append(["TOTAL", *totals, sum(totals)])
 
         total_row = ws.max_row
 
-        for col in range(1,len(headers)+1):
-            cell = ws.cell(row=total_row,column=col)
+        for col in range(1, len(headers)+1):
+            cell = ws.cell(row=total_row, column=col)
             cell.fill = PatternFill("solid", fgColor="000000")
-            cell.font = Font(bold=True,color="FFFFFF")
+            cell.font = Font(bold=True, color="FFFFFF")
             cell.alignment = Alignment(horizontal="center")
 
         # ===== CHARTS =====
-
         start_chart_row = ws.max_row + 3
 
-        for i,col in enumerate(range(3,11)):
+        for i, col in enumerate(range(2, 10)):
 
             chart = BarChart()
             chart.height = 12
@@ -382,8 +372,8 @@ async def main():
             chart.title = headers[col-1]
             chart.legend = None
 
-            data = Reference(ws, min_col=col, min_row=1, max_row=25)
-            cats = Reference(ws, min_col=2, min_row=2, max_row=25)
+            data = Reference(ws, min_col=col, min_row=1, max_row=len(date_list)+1)
+            cats = Reference(ws, min_col=1, min_row=2, max_row=len(date_list)+1)
 
             chart.add_data(data, titles_from_data=True)
             chart.set_categories(cats)
@@ -391,9 +381,9 @@ async def main():
             series = chart.series[0]
             pts = []
 
-            for hr in range(24):
-                dp = DataPoint(idx=hr)
-                dp.graphicalProperties.solidFill = get_hour_color(hr)
+            for idx in range(len(date_list)):
+                dp = DataPoint(idx=idx)
+                dp.graphicalProperties.solidFill = get_hour_color(idx)
                 pts.append(dp)
 
             series.dPt = pts
@@ -404,37 +394,31 @@ async def main():
         ws.cell(row=footer_row, column=1).value = "📊 Excel bar chart auto-generated"
         ws.cell(row=footer_row, column=1).font = Font(bold=True)
 
-
     # ================= PROPERTY SHEETS =================
-
-    for name, hourly in results:
+    for name, date_map in results:
 
         ws = wb.create_sheet(name[:31])
-        create_sheet(ws, hourly)
+        create_sheet(ws, date_map)
 
-        totals = 0
+        total_prop = 0
 
-        for h in range(24):
+        for d in date_list:
 
-            for k in consolidated[h]:
-                consolidated[h][k] += hourly[h][k]
+            for k in consolidated[d]:
+                consolidated[d][k] += date_map[d][k]
 
-            totals += sum(hourly[h].values())
+            total_prop += sum(date_map[d].values())
 
         property_totals.append({
             "name": name,
-            "total": totals
+            "total": total_prop
         })
 
-
     # ================= CONSOLIDATED =================
-
     ws = wb.create_sheet("CONSOLIDATED")
     create_sheet(ws, consolidated)
 
-
-# ================= PROPERTY RANKING =================
-
+    # ================= PROPERTY RANKING =================
     ws = wb.create_sheet("PROPERTY RANKING")
 
     headers = ["Rank","Property","Total Bookings","Badge"]
@@ -452,7 +436,6 @@ async def main():
     for i,w in enumerate(widths, start=1):
         ws.column_dimensions[chr(64+i)].width = w
 
-
     def get_medal(rank):
         if rank == 1:
             return "🥇 Gold"
@@ -461,7 +444,6 @@ async def main():
         if rank == 3:
             return "🥉 Bronze"
         return ""
-
 
     property_totals.sort(key=lambda x: x["total"], reverse=True)
 
@@ -484,29 +466,21 @@ async def main():
         for c in range(1,5):
             cell = ws.cell(row=r,column=c)
             cell.fill = fill
-            cell.border = Border(
-                left=Side(style="thin", color="DDDDDD"),
-                right=Side(style="thin", color="DDDDDD"),
-                top=Side(style="thin", color="DDDDDD"),
-                bottom=Side(style="thin", color="DDDDDD"),
-            )
+            cell.border = thin
             cell.alignment = Alignment(horizontal="center")
 
         rank += 1
 
-
     # ================= SAVE =================
-
     buffer = BytesIO()
     wb.save(buffer)
     buffer.seek(0)
 
     await send_telegram_excel_buffer(
         buffer,
-        filename=f"Booking_Mode_{display_date}.xlsx",
-        caption="📊 Hourly Booking Mode Report"
+        filename=f"Booking_Mode_{display_month}.xlsx",
+        caption="📊 Date-wise Booking Mode Report"
     )
-
 
 # ================= RUN =================
 
