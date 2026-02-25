@@ -398,16 +398,7 @@ async def main():
         pending = new_pending
 
         if pending:
-            await asyncio.sleep(FULL_RUN_RETRY_DELAY)
-            if len(success_results) != len(PROPERTIES):
-
-                missing = [
-                    PROPERTIES[k]["name"]
-                    for k in PROPERTIES.keys()
-                    if k not in success_results
-                ]
-
-    raise RuntimeError(f"DATA INCOMPLETE: Missing properties: {missing}")
+            await asyncio.sleep(FULL_RUN_RETRY_DELAY)        
 
     valid_results = [success_results[k] for k in PROPERTIES.keys() if k in success_results]
 
