@@ -531,8 +531,7 @@ async def main():
             ws.add_chart(chart, f"A{chart_row}")
 
         footer_row = base_chart_row + (len(chart_titles) * chart_gap) + 2
-        ws.cell(row=footer_row, column=1).value = "📊 Excel bar chart auto-generated"
-        ws.cell(row=footer_row, column=1).font = Font(bold=True, size=11)
+       
 
 
     # ================= PROPERTY SHEETS =================
