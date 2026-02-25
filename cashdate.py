@@ -369,7 +369,7 @@ async def main():
     TF = target_date.replace(day=1).strftime("%Y-%m-%d")
     TT = target_date.strftime("%Y-%m-%d")
 
-    HF = (target_date - timedelta(days=30)).strftime("%Y-%m-%d")
+    HF = (target_date - timedelta(days=120)).strftime("%Y-%m-%d")
     HT = TT
 
     display_month = datetime.strptime(TT, "%Y-%m-%d").strftime("%B %Y")
