@@ -152,6 +152,8 @@ async def fetch_bookings_batch(session, offset, f, t, P):
 
 async def process_property(P, TF, TT, HF, HT):
 
+    print(f"PROCESSING → {P['name']}")
+
     tf_dt = datetime.strptime(TF, "%Y-%m-%d").date()
     tt_dt = datetime.strptime(TT, "%Y-%m-%d").date()
 
@@ -175,25 +177,37 @@ async def process_property(P, TF, TT, HF, HT):
 
             for b in bookings.values():
 
-                if b.get("status") not in ["Checked In", "Checked Out"]:
+                status = (b.get("status") or "").strip()
+                if status not in ["Checked In", "Checked Out"]:
                     continue
 
-                checkin_time = b.get("checkin_time")
-                if not checkin_time:
-                    continue
+                # ================= TIME FIX =================
+                dt = None
 
-                try:
-                    dt = datetime.fromisoformat(checkin_time.replace("Z", ""))
-                    dt = dt.astimezone(IST)
-                except:
-                    continue
+                # Try checkin_time first
+                raw_time = b.get("checkin_time") or b.get("created_at")
+
+                if raw_time:
+                    try:
+                        dt = datetime.fromisoformat(str(raw_time).replace("Z", ""))
+                        dt = dt.astimezone(IST)
+                    except:
+                        dt = None
+
+                # Fallback to checkin date if time missing
+                if not dt:
+                    try:
+                        d = datetime.strptime(b.get("checkin"), "%Y-%m-%d")
+                        dt = IST.localize(d)
+                    except:
+                        continue
 
                 if not (tf_dt <= dt.date() <= tt_dt):
                     continue
 
                 hour = dt.hour
-                src = get_booking_source(b)
 
+                src = get_booking_source(b)
                 if src not in hourly[hour]:
                     src = "OBA"
 
@@ -206,6 +220,7 @@ async def process_property(P, TF, TT, HF, HT):
 
     return (P["name"], hourly)
 
+            
 
 # ================= RETRY =================
 
@@ -418,26 +433,65 @@ async def main():
     create_sheet(ws, consolidated)
 
 
-    # ================= PROPERTY RANKING =================
+# ================= PROPERTY RANKING =================
 
     ws = wb.create_sheet("PROPERTY RANKING")
 
-    headers = ["Rank","Property","Total Bookings"]
+    headers = ["Rank","Property","Total Bookings","Badge"]
     ws.append(headers)
 
     header_fill = PatternFill("solid", fgColor="1F4E78")
 
-    for col in range(1,4):
+    for col in range(1,5):
         c = ws.cell(row=1,column=col)
         c.fill = header_fill
         c.font = Font(bold=True,color="FFFFFF")
         c.alignment = Alignment(horizontal="center")
 
+    widths = [10,28,18,18]
+    for i,w in enumerate(widths, start=1):
+        ws.column_dimensions[chr(64+i)].width = w
+
+
+    def get_medal(rank):
+        if rank == 1:
+            return "🥇 Gold"
+        if rank == 2:
+            return "🥈 Silver"
+        if rank == 3:
+            return "🥉 Bronze"
+        return ""
+
+
     property_totals.sort(key=lambda x: x["total"], reverse=True)
 
     rank = 1
-    for p in property_totals:
-        ws.append([rank, p["name"], p["total"]])
+
+    for idx,p in enumerate(property_totals):
+
+        medal = get_medal(rank)
+
+        ws.append([
+            rank,
+            p["name"],
+            p["total"],
+            medal
+        ])
+
+        r = ws.max_row
+        fill = PatternFill("solid", fgColor=get_hour_color(idx))
+
+        for c in range(1,5):
+            cell = ws.cell(row=r,column=c)
+            cell.fill = fill
+            cell.border = Border(
+                left=Side(style="thin", color="DDDDDD"),
+                right=Side(style="thin", color="DDDDDD"),
+                top=Side(style="thin", color="DDDDDD"),
+                bottom=Side(style="thin", color="DDDDDD"),
+            )
+            cell.alignment = Alignment(horizontal="center")
+
         rank += 1
 
 
