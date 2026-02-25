@@ -1,8 +1,6 @@
 # ==============================
 # ULTRA FAST ASYNC MULTI PROPERTY AUTOMATION
-# DATE-WISE CASH COLLECTION REPORT
-# MONTH START → TODAY
-# WITH PROPERTY RANKING
+# HOURLY CASH + QR + ONLINE + TOTAL REPORT
 # ==============================
 
 import os
@@ -18,7 +16,9 @@ from openpyxl.chart.series import DataPoint
 from io import BytesIO
 import pytz
 
+
 IST = pytz.timezone("Asia/Kolkata")
+now = datetime.now(IST)
 
 MAX_FULL_RUN_RETRIES = 5
 FULL_RUN_RETRY_DELAY = 10
@@ -35,9 +35,14 @@ BATCH_TIMEOUT = 35
 # ================= TELEGRAM =================
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+if not TELEGRAM_BOT_TOKEN:
+    raise RuntimeError("❌ TELEGRAM_BOT_TOKEN missing")
+
 CHAT_MAP = json.loads(os.getenv("TELEGRAM_CHAT_MAP", "{}"))
 
 def get_chat_id(name: str):
+    if name not in CHAT_MAP:
+        raise RuntimeError(f"❌ Chat ID not configured: {name}")
     return int(CHAT_MAP[name])
 
 TELEGRAM_CHAT_ID = get_chat_id("6am")
@@ -63,7 +68,8 @@ async def send_telegram_excel_buffer(buffer, filename, caption=None):
     async with aiohttp.ClientSession() as session:
         async with session.post(url, data=data, timeout=120) as resp:
             if resp.status != 200:
-                raise RuntimeError(await resp.text())
+                text = await resp.text()
+                raise RuntimeError(f"Telegram send failed: {text}")
 
 
 # ================= PROPERTIES =================
@@ -71,10 +77,13 @@ async def send_telegram_excel_buffer(buffer, filename, caption=None):
 PROPERTIES_RAW = json.loads(os.getenv("OYO_PROPERTIES", "{}"))
 PROPERTIES = {int(k): v for k, v in PROPERTIES_RAW.items()}
 
+if not PROPERTIES:
+    raise RuntimeError("❌ OYO_PROPERTIES secret missing or empty")
+
 
 # ================= COLOR =================
 
-def get_row_color(index):
+def get_hour_color(hour):
 
     palette = [
         "EEF3FB","E8F0FA","E3EDFA","DEEAFA",
@@ -85,7 +94,7 @@ def get_row_color(index):
         "F3E5F5","EDE7F6","E8EAF6","E3F2FD"
     ]
 
-    return palette[index % len(palette))
+    return palette[hour % 24]
 
 
 # ================= FETCH DETAILS =================
@@ -111,53 +120,71 @@ async def fetch_booking_details(session, P, booking_no):
         "x-source-client": "merchant"
     }
 
-    async with session.get(
-        url,
-        params=params,
-        headers=headers,
-        cookies=cookies,
-        timeout=DETAIL_TIMEOUT
-    ) as r:
+    for attempt in range(1, 4):
 
-        if r.status != 200:
-            raise RuntimeError("DETAIL API FAILED")
+        try:
+            async with session.get(
+                url,
+                params=params,
+                headers=headers,
+                cookies=cookies,
+                timeout=DETAIL_TIMEOUT
+            ) as r:
 
-        data = await r.json()
+                if r.status != 200:
+                    raise RuntimeError("DETAIL API FAILED")
 
-        booking = next(
-            iter(data.get("entities", {}).get("bookings", {}).values()),
-            {}
-        )
+                data = await r.json()
 
-        payments = booking.get("payments", [])
+                booking = next(
+                    iter(data.get("entities", {}).get("bookings", {}).values()),
+                    {}
+                )
 
-        events = []
+                payments = booking.get("payments", [])
 
-        for p in payments:
+                events = []
 
-            amt = float(p.get("amount", 0) or 0)
-            if amt <= 0:
-                continue
+                for p in payments:
 
-            created_at = str(p.get("created_at") or "")
-            if not created_at:
-                continue
+                    amt = float(p.get("amount", 0) or 0)
+                    if amt <= 0:
+                        continue
 
-            try:
-                dt = datetime.fromisoformat(created_at.replace("Z", ""))
-                dt = dt.astimezone(IST)
-            except:
-                continue
+                    created_at = str(p.get("created_at") or "").strip()
+                    if not created_at:
+                        continue
 
-            if p.get("mode") != "Cash at Hotel":
-                continue
+                    try:
+                        dt = datetime.fromisoformat(created_at.replace("Z", ""))
+                        dt = dt.astimezone(IST)
+                    except Exception:
+                        continue
 
-            events.append({
-                "date": dt.date(),
-                "amt": amt
-            })
+                    mode_raw = p.get("mode", "")
 
-        return events
+                    if mode_raw == "Cash at Hotel":
+                        bucket = "cash"
+                    elif mode_raw == "UPI QR":
+                        bucket = "qr"
+                    elif mode_raw == "oyo_wizard_discount":
+                        continue
+                    else:
+                        bucket = "online"
+
+                    events.append({
+                        "date": dt.strftime("%Y-%m-%d"),
+                        "hour": dt.hour,
+                        "mode": bucket,
+                        "amt": amt
+                    })
+
+                return events
+
+        except Exception:
+            await asyncio.sleep(2 + attempt)
+
+    raise RuntimeError("DETAIL FETCH FAILED")
 
 
 # ================= FETCH BOOKINGS =================
@@ -171,13 +198,19 @@ async def fetch_bookings_batch(session, offset, f, t, P):
         "checkin_from": f,
         "checkin_till": t,
         "batch_count": 100,
-        "batch_offset": offset
+        "batch_offset": offset,
+        "visibility_required": "true",
+        "additionalParams": "payment_hold_transaction,guest,stay_details",
+        "decimal_price": "true",
+        "ascending": "true",
+        "sort_on": "checkin_date"
     }
 
     cookies = {"uif": P["UIF"], "uuid": P["UUID"]}
 
     headers = {
         "accept": "application/json",
+        "content-type": "application/json",
         "x-qid": str(P["QID"]),
         "x-source-client": "merchant"
     }
@@ -198,11 +231,38 @@ async def fetch_bookings_batch(session, offset, f, t, P):
 
 # ================= PROCESS PROPERTY =================
 
-async def process_property(P, TF, TT, HF, HT, date_list):
+async def process_property(P, TF, TT, HF, HT):
 
-    date_map = {d: 0.0 for d in date_list}
+    print(f"PROCESSING → {P['name']}")
+
+    tf_dt = datetime.strptime(TF, "%Y-%m-%d").date()
+    tt_dt = datetime.strptime(TT, "%Y-%m-%d").date()
 
     async with aiohttp.ClientSession() as session:
+
+        detail_semaphore = asyncio.Semaphore(DETAIL_PARALLEL_LIMIT)
+        detail_cache = {}
+
+        async def limited_detail_call(booking_no):
+            async with detail_semaphore:
+                if booking_no in detail_cache:
+                    return detail_cache[booking_no]
+                res = await fetch_booking_details(session, P, booking_no)
+                detail_cache[booking_no] = res
+                return res
+
+        # ===== DATE MAP =====
+        date_map = {}
+
+        d = tf_dt
+        while d <= tt_dt:
+            date_map[d] = {
+                "cash": 0.0,
+                "qr": 0.0,
+                "online": 0.0,
+                "total": 0.0
+            }
+            d += timedelta(days=1)
 
         offset = 0
 
@@ -214,165 +274,220 @@ async def process_property(P, TF, TT, HF, HT, date_list):
                 break
 
             bookings = data.get("entities", {}).get("bookings", {})
+            if not bookings:
+                break
+
+            tasks = []
+            mapping = []
 
             for b in bookings.values():
 
-                if b.get("status") not in ["Checked In", "Checked Out"]:
+                status = (b.get("status") or "").strip()
+                if status not in ["Checked In", "Checked Out"]:
                     continue
 
                 booking_no = b.get("booking_no")
                 if not booking_no:
                     continue
 
-                details = await fetch_booking_details(session, P, booking_no)
+                tasks.append(limited_detail_call(booking_no))
+                mapping.append(b)
 
-                for ev in details:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
 
-                    d = ev["date"]
-                    if d not in date_map:
+            for res in results:
+
+                if isinstance(res, Exception):
+                    continue
+
+                for ev in res or []:
+
+                    try:
+                        d_dt = datetime.strptime(ev["date"], "%Y-%m-%d").date()
+                    except:
                         continue
 
-                    date_map[d] += float(ev["amt"])
+                    if not (tf_dt <= d_dt <= tt_dt):
+                        continue
+
+                    amt = float(ev["amt"])
+                    mode = ev["mode"]
+
+                    date_map[d_dt][mode] += amt
+                    date_map[d_dt]["total"] += amt
 
             if len(data.get("bookingIds", [])) < 100:
                 break
 
             offset += 100
 
-    return (P["name"], date_map)
-
+        return (P["name"], date_map)
 
 # ================= RETRY =================
 
-async def run_property_with_retry(P, TF, TT, HF, HT, date_list, retries=3):
+async def run_property_with_retry(P, TF, TT, HF, HT, retries=3):
 
-    for _ in range(retries):
+    last_error = None
+
+    for attempt in range(1, retries + 1):
+
         try:
-            return await process_property(P, TF, TT, HF, HT, date_list)
-        except:
-            await asyncio.sleep(2)
+            return await process_property(P, TF, TT, HF, HT)
 
-    raise RuntimeError("PROPERTY FAILED")
+        except Exception as e:
+
+            last_error = e
+
+            print(f"RETRY {attempt}/{retries} → {P['name']} :: {e}")
+
+            await asyncio.sleep(2 + attempt * 2)
+
+    raise RuntimeError(f"PROPERTY FAILED → {P['name']}") from last_error
 
 
-async def run_property_limited(P, TF, TT, HF, HT, date_list):
+async def run_property_limited(P, TF, TT, HF, HT):
+
     async with prop_semaphore:
-        return await run_property_with_retry(P, TF, TT, HF, HT, date_list)
+
+        return await run_property_with_retry(P, TF, TT, HF, HT)
 
 
 # ================= MAIN =================
 
 async def main():
 
-    today = datetime.now(IST).date()
-    month_start = today.replace(day=1)
+    print("========================================")
+    print(" DATE-WISE CASH REPORT")
+    print("========================================")
 
-    TF = month_start.strftime("%Y-%m-%d")
-    TT = today.strftime("%Y-%m-%d")
+    global now
+    now = datetime.now(IST)
 
-    HF = TF
+    # ================= DATE RANGE =================
+    target_date = (now - timedelta(days=1)).date()
+
+    TF = target_date.replace(day=1).strftime("%Y-%m-%d")
+    TT = target_date.strftime("%Y-%m-%d")
+
+    HF = (target_date - timedelta(days=30)).strftime("%Y-%m-%d")
     HT = TT
 
-    display_month = today.strftime("%B %Y")
+    display_month = datetime.strptime(TT, "%Y-%m-%d").strftime("%B %Y")
 
-    date_list = []
-    d = month_start
-    while d <= today:
-        date_list.append(d)
-        d += timedelta(days=1)
+    pending = {k: v for k, v in PROPERTIES.items()}
+    success_results = {}
 
-    pending = {k:v for k,v in PROPERTIES.items()}
-    success = {}
-
-    for _ in range(MAX_FULL_RUN_RETRIES):
+    # ================= FETCH DATA =================
+    for run_attempt in range(1, MAX_FULL_RUN_RETRIES + 1):
 
         if not pending:
             break
 
-        tasks = [
-            run_property_limited(P, TF, TT, HF, HT, date_list)
-            for P in pending.values()
-        ]
-
+        tasks = [run_property_limited(P, TF, TT, HF, HT) for P in pending.values()]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         new_pending = {}
 
-        for key,(P,res) in zip(list(pending.keys()), zip(pending.values(), results)):
-            if isinstance(res, Exception):
+        for key, (P, result) in zip(list(pending.keys()), zip(pending.values(), results)):
+
+            if isinstance(result, Exception):
                 new_pending[key] = P
-            else:
-                success[key] = res
+                continue
+
+            success_results[key] = result
 
         pending = new_pending
 
-    results = [success[k] for k in PROPERTIES if k in success]
+        if pending:
+            await asyncio.sleep(FULL_RUN_RETRY_DELAY)
 
+    valid_results = [success_results[k] for k in PROPERTIES.keys() if k in success_results]
+
+    # ================= EXCEL =================
     wb = Workbook()
     wb.remove(wb.active)
 
-    consolidated = {d: 0.0 for d in date_list}
-    property_totals = []
+    # ===== DATE LIST =====
+    start_dt = datetime.strptime(TF, "%Y-%m-%d").date()
+    end_dt = datetime.strptime(TT, "%Y-%m-%d").date()
 
+    date_list = []
+    d = start_dt
+    while d <= end_dt:
+        date_list.append(d)
+        d += timedelta(days=1)
+
+    consolidated = {
+        d: {"cash": 0.0}
+        for d in date_list
+    }
+
+    thin = Border(
+        left=Side(style="thin", color="DDDDDD"),
+        right=Side(style="thin", color="DDDDDD"),
+        top=Side(style="thin", color="DDDDDD"),
+        bottom=Side(style="thin", color="DDDDDD"),
+    )
 
     # ================= SHEET BUILDER =================
+    def create_sheet(ws, date_map):
 
-    def create_sheet(ws, data_map):
-
-        thin = Border(
-            left=Side(style="thin", color="DDDDDD"),
-            right=Side(style="thin", color="DDDDDD"),
-            top=Side(style="thin", color="DDDDDD"),
-            bottom=Side(style="thin", color="DDDDDD"),
-        )
-
-        ws.append(["Date","Cash"])
+        ws.append(["Date", "Cash"])
 
         header_fill = PatternFill("solid", fgColor="1F4E78")
 
-        for col in range(1,3):
-            c = ws.cell(row=1,column=col)
+        for col in range(1, 3):
+            c = ws.cell(row=1, column=col)
             c.fill = header_fill
-            c.font = Font(bold=True,color="FFFFFF")
+            c.font = Font(bold=True, color="FFFFFF")
             c.alignment = Alignment(horizontal="center")
 
-        ws.column_dimensions["A"].width = 14
-        ws.column_dimensions["B"].width = 14
-
-        total = 0
+        sum_cash = 0
 
         for idx, d in enumerate(date_list):
 
-            cash = round(data_map[d],2)
-            total += cash
+            row = date_map.get(d, {"cash":0})
 
-            ws.append([d.strftime("%d-%m-%Y"), cash])
+            cash = round(row["cash"], 2)
+            sum_cash += cash
+
+            ws.append([
+                d.strftime("%d-%m-%Y"),
+                cash
+            ])
 
             r = ws.max_row
-            fill = PatternFill("solid", fgColor=get_row_color(idx))
+            fill = PatternFill("solid", fgColor=get_hour_color(idx))
 
-            for c in range(1,3):
-                cell = ws.cell(row=r,column=c)
+            for c in range(1, 3):
+                cell = ws.cell(row=r, column=c)
                 cell.fill = fill
                 cell.border = thin
                 cell.alignment = Alignment(horizontal="center")
 
-        ws.append(["TOTAL", round(total,2)])
+        ws.append([
+            "TOTAL",
+            round(sum_cash,2)
+        ])
 
         total_row = ws.max_row
 
-        for c in range(1,3):
-            cell = ws.cell(row=total_row,column=c)
+        for c in range(1, 3):
+            cell = ws.cell(row=total_row, column=c)
             cell.fill = PatternFill("solid", fgColor="000000")
-            cell.font = Font(bold=True,color="FFFFFF")
+            cell.font = Font(bold=True, color="FFFFFF")
             cell.alignment = Alignment(horizontal="center")
 
+        ws.column_dimensions["A"].width = 15
+        ws.column_dimensions["B"].width = 16
+
         # ===== CHART =====
+        base_chart_row = ws.max_row + 3
 
         chart = BarChart()
+        chart.title = "Cash Trend"
         chart.height = 12
         chart.width = 26
-        chart.title = "Cash Collection"
         chart.legend = None
 
         data = Reference(ws, min_col=2, min_row=1, max_row=len(date_list)+1)
@@ -382,84 +497,125 @@ async def main():
         chart.set_categories(cats)
 
         series = chart.series[0]
-        pts = []
+        points = []
 
-        for hr in range(len(date_list)):
-            dp = DataPoint(idx=hr)
-            dp.graphicalProperties.solidFill = get_row_color(hr)
-            pts.append(dp)
+        for idx in range(len(date_list)):
+            dp = DataPoint(idx=idx)
+            dp.graphicalProperties.solidFill = get_hour_color(idx)
+            points.append(dp)
 
-        series.dPt = pts
+        series.dPt = points
 
-        ws.add_chart(chart, f"A{ws.max_row+3}")
+        ws.add_chart(chart, f"A{base_chart_row}")
 
-        footer = ws.max_row + 22
-        ws.cell(row=footer, column=1).value = "📊 Excel bar chart auto-generated"
-        ws.cell(row=footer, column=1).font = Font(bold=True)
+        footer_row = base_chart_row + 20
+        
 
 
-    # ===== PROPERTY SHEETS =====
-
-    for name, data in results:
+    # ================= PROPERTY SHEETS =================
+    for name, date_map in valid_results:
 
         ws = wb.create_sheet(name[:31])
-        create_sheet(ws, data)
-
-        total_cash = 0
+        create_sheet(ws, date_map)
 
         for d in date_list:
-            consolidated[d] += data[d]
-            total_cash += data[d]
-
-        property_totals.append({
-            "name": name,
-            "cash": total_cash
-        })
+            consolidated[d]["cash"] += date_map[d]["cash"]
 
 
-    # ===== CONSOLIDATED =====
-
+    # ================= CONSOLIDATED =================
     ws = wb.create_sheet("CONSOLIDATED")
     create_sheet(ws, consolidated)
 
 
-    # ===== PROPERTY RANKING =====
+    # ================= PROPERTY RANKING =================
+    ranking_data = []
+
+    for name, date_map in valid_results:
+
+        total_cash = sum(v["cash"] for v in date_map.values())
+
+        ranking_data.append({
+            "name": name,
+            "cash": total_cash
+        })
+
+    ranking_data.sort(key=lambda x: x["cash"], reverse=True)
 
     ws = wb.create_sheet("PROPERTY RANKING")
 
-    ws.append(["Rank","Property","Cash"])
+    headers = ["Rank", "Property", "Cash", "Badge"]
+    ws.append(headers)
 
     header_fill = PatternFill("solid", fgColor="1F4E78")
 
-    for col in range(1,4):
-        c = ws.cell(row=1,column=col)
+    for col in range(1, 5):
+        c = ws.cell(row=1, column=col)
         c.fill = header_fill
-        c.font = Font(bold=True,color="FFFFFF")
+        c.font = Font(bold=True, color="FFFFFF")
         c.alignment = Alignment(horizontal="center")
 
-    property_totals.sort(key=lambda x: x["cash"], reverse=True)
+    widths = [10, 28, 16, 18]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[chr(64+i)].width = w
+
+
+    def get_medal(rank):
+        if rank == 1:
+            return "🥇 Gold"
+        if rank == 2:
+            return "🥈 Silver"
+        if rank == 3:
+            return "🥉 Bronze"
+        return ""
+
 
     rank = 1
-    for p in property_totals:
-        ws.append([rank, p["name"], round(p["cash"],2)])
+
+    for idx, p in enumerate(ranking_data):
+
+        medal = get_medal(rank)
+
+        ws.append([
+            rank,
+            p["name"],
+            round(p["cash"], 2),
+            medal
+        ])
+
+        r = ws.max_row
+        fill = PatternFill("solid", fgColor=get_hour_color(idx))
+
+        for c in range(1, 5):
+            cell = ws.cell(row=r, column=c)
+            cell.fill = fill
+            cell.border = thin
+            cell.alignment = Alignment(horizontal="center")
+
         rank += 1
 
 
+    # ================= SAVE + TELEGRAM =================
     buffer = BytesIO()
     wb.save(buffer)
     buffer.seek(0)
 
     await send_telegram_excel_buffer(
         buffer,
-        filename=f"Cash_Datewise_{display_month}.xlsx",
-        caption="📊 Date-wise Cash Collection Report"
+        filename=f"Cash_{display_month}.xlsx",
+        caption="📊 Date-wise Cash Report"
     )
+
+    print("✅ EXCEL SENT SUCCESSFULLY")
 
 
 # ================= RUN =================
 
 if __name__ == "__main__":
+
     try:
         asyncio.run(main())
+
     except Exception:
+
+        print("SCRIPT CRASHED")
         traceback.print_exc()
