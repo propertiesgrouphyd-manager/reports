@@ -312,7 +312,7 @@ async def process_property(P, TF, TT, HF, HT):
 
 # ================= RETRY =================
 
-async def run_property_with_retry(P, TF, TT, HF, HT, retries=3):
+async def run_property_with_retry(P, TF, TT, HF, HT, retries=5):
 
     last_error = None
 
@@ -383,9 +383,34 @@ async def main():
         pending = new_pending
 
         if pending:
+
+            if run_attempt == MAX_FULL_RUN_RETRIES:
+
+                failed_names = [p["name"] for p in pending.values()]
+
+                raise RuntimeError(
+                    f"FINAL FAILURE: Properties failed after retries: {failed_names}"
+                )
+
             await asyncio.sleep(FULL_RUN_RETRY_DELAY)
 
-    valid_results = [success_results[k] for k in PROPERTIES.keys() if k in success_results]
+    # ================= FINAL VERIFICATION =================
+
+    valid_results = [
+        success_results[k]
+        for k in PROPERTIES.keys()
+        if k in success_results
+    ]
+
+    if len(valid_results) != len(PROPERTIES):
+
+        missing = [
+            PROPERTIES[k]["name"]
+            for k in PROPERTIES.keys()
+            if k not in success_results
+        ]
+
+        raise RuntimeError(f"DATA INCOMPLETE: Missing properties: {missing}")
 
     wb = Workbook()
     wb.remove(wb.active)
