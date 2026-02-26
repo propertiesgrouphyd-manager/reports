@@ -294,8 +294,7 @@ async def process_property(P, TF, TT, HF, HT):
 
             # ===== TERMINATION CONDITION =====
 
-            if new_ids_found == 0 and len(booking_ids) < 100:
-                print(f"⚠️ No new bookings → {P['name']}")
+            if len(booking_ids) < 100:
                 break
 
             # ===== STABLE OFFSET INCREMENT (CRITICAL FIX) =====
