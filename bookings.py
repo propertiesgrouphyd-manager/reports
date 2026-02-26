@@ -234,7 +234,7 @@ async def process_property(P, TF, TT, HF, HT):
                 if status not in ["Checked In", "Checked Out"]:
                     continue
 
-                checkin_str = b.get("checkin_time")
+                checkin_str = b.get("checkin")
                 if not checkin_str:
                     continue
 
