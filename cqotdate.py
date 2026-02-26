@@ -1,6 +1,6 @@
 # ==============================
 # ULTRA FAST ASYNC MULTI PROPERTY AUTOMATION
-# HOURLY CASH + QR + ONLINE + TOTAL REPORT
+# HOURLY CASH + QR + ONLINE + DISCOUNT + TOTAL REPORT
 # ==============================
 
 import os
@@ -83,34 +83,24 @@ if not PROPERTIES:
 
 # ================= COLOR =================
 
-# ================= MONTH DAY COLOR =================
-
 def get_hour_color(day_index: int, total_days: int = 31):
-    """
-    Unique color for each day in month.
-    Natural sun → sunset → night progression.
-    Works for 28–31 days.
-    """
 
     if total_days <= 1:
         total_days = 31
 
-    # Normalize position 0 → 1 across month
     t = day_index / (total_days - 1)
 
-    # Solar gradient anchors
     colors = [
-        (238, 243, 251),  # dawn blue
-        (217, 242, 255),  # morning sky
-        (255, 244, 204),  # sunlight
-        (255, 221, 128),  # noon warm
-        (255, 204, 153),  # evening
-        (255, 193, 193),  # sunset
-        (232, 234, 246),  # twilight
-        (227, 242, 253)   # night blue
+        (238, 243, 251),
+        (217, 242, 255),
+        (255, 244, 204),
+        (255, 221, 128),
+        (255, 204, 153),
+        (255, 193, 193),
+        (232, 234, 246),
+        (227, 242, 253)
     ]
 
-    # Map t across segments
     seg = t * (len(colors) - 1)
     i = int(seg)
     frac = seg - i
@@ -199,7 +189,7 @@ async def fetch_booking_details(session, P, booking_no):
                     elif mode_raw == "UPI QR":
                         bucket = "qr"
                     elif mode_raw == "oyo_wizard_discount":
-                        continue
+                        bucket = "discount"
                     else:
                         bucket = "online"
 
@@ -282,7 +272,6 @@ async def process_property(P, TF, TT, HF, HT):
                 detail_cache[booking_no] = res
                 return res
 
-        # ===== DATE MAP =====
         date_map = {}
 
         d = tf_dt
@@ -291,6 +280,7 @@ async def process_property(P, TF, TT, HF, HT):
                 "cash": 0.0,
                 "qr": 0.0,
                 "online": 0.0,
+                "discount": 0.0,
                 "total": 0.0
             }
             d += timedelta(days=1)
@@ -309,7 +299,6 @@ async def process_property(P, TF, TT, HF, HT):
                 break
 
             tasks = []
-            mapping = []
 
             for b in bookings.values():
 
@@ -322,7 +311,6 @@ async def process_property(P, TF, TT, HF, HT):
                     continue
 
                 tasks.append(limited_detail_call(booking_no))
-                mapping.append(b)
 
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -344,6 +332,9 @@ async def process_property(P, TF, TT, HF, HT):
                     amt = float(ev["amt"])
                     mode = ev["mode"]
 
+                    if mode not in date_map[d_dt]:
+                        continue
+
                     date_map[d_dt][mode] += amt
                     date_map[d_dt]["total"] += amt
 
@@ -353,6 +344,7 @@ async def process_property(P, TF, TT, HF, HT):
             offset += 100
 
         return (P["name"], date_map)
+
 
 # ================= RETRY =================
 
@@ -376,15 +368,13 @@ async def run_property_with_retry(P, TF, TT, HF, HT, retries=5):
     raise RuntimeError(f"PROPERTY FAILED → {P['name']}") from last_error
 
 
-# ================= PARALLEL LIMITER =================
-
 async def run_property_limited(P, TF, TT, HF, HT):
 
     async with prop_semaphore:
         return await run_property_with_retry(P, TF, TT, HF, HT)
 
 
-# ================ MAIN =================
+# ================= MAIN =================
 async def main():
 
     print("========================================")
@@ -394,7 +384,6 @@ async def main():
     global now
     now = datetime.now(IST)
 
-    # ================= DATE RANGE =================
     target_date = (now - timedelta(days=1)).date()
 
     TF = target_date.replace(day=1).strftime("%Y-%m-%d")
@@ -405,7 +394,6 @@ async def main():
 
     display_month = datetime.strptime(TT, "%Y-%m-%d").strftime("%B %Y")
 
-    # ================= SMART RETRY (ONLY FAILED PROPERTIES) =================
     pending = {k: v for k, v in PROPERTIES.items()}
     success_results = {}
 
@@ -413,9 +401,6 @@ async def main():
 
         if not pending:
             break
-
-        print(f"\n🔁 PARTIAL RUN ATTEMPT {run_attempt}/{MAX_FULL_RUN_RETRIES}")
-        print(f"⏳ Pending Properties: {len(pending)}")
 
         tasks = [run_property_limited(P, TF, TT, HF, HT) for P in pending.values()]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -425,44 +410,28 @@ async def main():
         for key, (P, result) in zip(list(pending.keys()), zip(pending.values(), results)):
 
             if isinstance(result, Exception):
-                print(f"❌ FAILED → {P['name']} :: {result}")
                 new_pending[key] = P
                 continue
 
             success_results[key] = result
-            print(f"✅ OK → {P['name']}")
 
         pending = new_pending
 
         if pending:
 
             if run_attempt == MAX_FULL_RUN_RETRIES:
-
                 failed_names = [p["name"] for p in pending.values()]
-
                 raise RuntimeError(
                     f"FINAL FAILURE: Properties failed after retries: {failed_names}"
                 )
 
-            print(f"🔁 RETRYING ONLY FAILED PROPERTIES after {FULL_RUN_RETRY_DELAY}s...")
             await asyncio.sleep(FULL_RUN_RETRY_DELAY)
 
-    # ================= FINAL VERIFICATION =================
     valid_results = [success_results[k] for k in PROPERTIES.keys() if k in success_results]
 
-    if len(valid_results) != len(PROPERTIES):
-
-        missing = [PROPERTIES[k]["name"] for k in PROPERTIES.keys() if k not in success_results]
-
-        raise RuntimeError(f"DATA INCOMPLETE: Missing properties: {missing}")
-
-    print("✅ DATA VERIFIED — ALL PROPERTIES PRESENT")
-
-    # ================= EXCEL =================
     wb = Workbook()
     wb.remove(wb.active)
 
-    # ===== DATE LIST =====
     start_dt = datetime.strptime(TF, "%Y-%m-%d").date()
     end_dt = datetime.strptime(TT, "%Y-%m-%d").date()
 
@@ -473,7 +442,7 @@ async def main():
         d += timedelta(days=1)
 
     consolidated = {
-        d: {"cash": 0.0, "qr": 0.0, "online": 0.0, "total": 0.0}
+        d: {"cash": 0.0, "qr": 0.0, "online": 0.0, "discount": 0.0, "total": 0.0}
         for d in date_list
     }
 
@@ -484,33 +453,34 @@ async def main():
         bottom=Side(style="thin", color="DDDDDD"),
     )
 
-    # ================= SHEET BUILDER =================
     def create_sheet(ws, date_map):
 
-        ws.append(["Date", "Cash", "QR", "Online", "Total"])
+        ws.append(["Date", "Cash", "QR", "Online", "Discount", "Total"])
 
         header_fill = PatternFill("solid", fgColor="1F4E78")
 
-        for col in range(1, 6):
+        for col in range(1, 7):
             c = ws.cell(row=1, column=col)
             c.fill = header_fill
             c.font = Font(bold=True, color="FFFFFF")
             c.alignment = Alignment(horizontal="center")
 
-        sum_cash = sum_qr = sum_online = sum_total = 0
+        sum_cash = sum_qr = sum_online = sum_discount = sum_total = 0
 
         for idx, d in enumerate(date_list):
 
-            row = date_map.get(d, {"cash":0,"qr":0,"online":0,"total":0})
+            row = date_map.get(d, {"cash":0,"qr":0,"online":0,"discount":0,"total":0})
 
             cash = round(row["cash"], 2)
             qr = round(row["qr"], 2)
             online = round(row["online"], 2)
+            discount = round(row["discount"], 2)
             total = round(row["total"], 2)
 
             sum_cash += cash
             sum_qr += qr
             sum_online += online
+            sum_discount += discount
             sum_total += total
 
             ws.append([
@@ -518,13 +488,14 @@ async def main():
                 cash,
                 qr,
                 online,
+                discount,
                 total
             ])
 
             r = ws.max_row
             fill = PatternFill("solid", fgColor=get_hour_color(idx, len(date_list)))
 
-            for c in range(1, 6):
+            for c in range(1, 7):
                 cell = ws.cell(row=r, column=c)
                 cell.fill = fill
                 cell.border = thin
@@ -535,12 +506,13 @@ async def main():
             round(sum_cash,2),
             round(sum_qr,2),
             round(sum_online,2),
+            round(sum_discount,2),
             round(sum_total,2)
         ])
 
         total_row = ws.max_row
 
-        for c in range(1, 6):
+        for c in range(1, 7):
             cell = ws.cell(row=total_row, column=c)
             cell.fill = PatternFill("solid", fgColor="000000")
             cell.font = Font(bold=True, color="FFFFFF")
@@ -550,16 +522,15 @@ async def main():
         ws.column_dimensions["B"].width = 14
         ws.column_dimensions["C"].width = 14
         ws.column_dimensions["D"].width = 14
-        ws.column_dimensions["E"].width = 16
+        ws.column_dimensions["E"].width = 14
+        ws.column_dimensions["F"].width = 16
 
-
-        # ===== CHARTS =====
-        chart_titles = ["Cash", "QR", "Online", "Total"]
+        chart_titles = ["Cash", "QR", "Online", "Discount", "Total"]
 
         base_chart_row = ws.max_row + 3
         chart_gap = 22
 
-        for i, col in enumerate(range(2, 6)):
+        for i, col in enumerate(range(2, 7)):
 
             chart = BarChart()
             chart.title = f"{chart_titles[i]} Trend"
@@ -585,9 +556,8 @@ async def main():
 
             chart_row = base_chart_row + (i * chart_gap)
             ws.add_chart(chart, f"A{chart_row}")
-    
 
-    # ================= PROPERTY SHEETS =================
+
     for name, date_map in valid_results:
 
         ws = wb.create_sheet(name[:31])
@@ -597,9 +567,9 @@ async def main():
             for k in consolidated[d]:
                 consolidated[d][k] += date_map[d][k]
 
-    # ================= CONSOLIDATED =================
     ws = wb.create_sheet("CONSOLIDATED")
     create_sheet(ws, consolidated)
+
 
     # ================= PROPERTY RANKING =================
     ranking_data = []
@@ -609,6 +579,7 @@ async def main():
         total_cash = sum(v["cash"] for v in date_map.values())
         total_qr = sum(v["qr"] for v in date_map.values())
         total_online = sum(v["online"] for v in date_map.values())
+        total_discount = sum(v["discount"] for v in date_map.values())
         total_total = sum(v["total"] for v in date_map.values())
 
         ranking_data.append({
@@ -616,6 +587,7 @@ async def main():
             "cash": total_cash,
             "qr": total_qr,
             "online": total_online,
+            "discount": total_discount,
             "total": total_total
         })
 
@@ -623,18 +595,18 @@ async def main():
 
     ws = wb.create_sheet("PROPERTY RANKING")
 
-    headers = ["Rank", "Property", "Cash", "QR", "Online", "Total", "Badge"]
+    headers = ["Rank", "Property", "Cash", "QR", "Online", "Discount", "Total", "Badge"]
     ws.append(headers)
 
     header_fill = PatternFill("solid", fgColor="1F4E78")
 
-    for col in range(1, 8):
+    for col in range(1, 9):
         c = ws.cell(row=1, column=col)
         c.fill = header_fill
         c.font = Font(bold=True, color="FFFFFF")
         c.alignment = Alignment(horizontal="center")
 
-    widths = [10, 28, 14, 14, 14, 16, 18]
+    widths = [10, 28, 14, 14, 14, 14, 16, 18]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[chr(64+i)].width = w
 
@@ -659,14 +631,15 @@ async def main():
             round(p["cash"], 2),
             round(p["qr"], 2),
             round(p["online"], 2),
+            round(p["discount"], 2),
             round(p["total"], 2),
             medal
         ])
 
         r = ws.max_row
         fill = PatternFill("solid", fgColor=get_hour_color(idx, len(date_list)))
-        
-        for c in range(1, 8):
+
+        for c in range(1, 9):
             cell = ws.cell(row=r, column=c)
             cell.fill = fill
             cell.border = thin
@@ -674,7 +647,8 @@ async def main():
 
         rank += 1
 
-    # ================= SAVE + TELEGRAM =================
+
+
     buffer = BytesIO()
     wb.save(buffer)
     buffer.seek(0)
@@ -686,8 +660,7 @@ async def main():
     )
 
     print("✅ EXCEL SENT SUCCESSFULLY")
-            
-# ================= RUN =================
+
 
 if __name__ == "__main__":
 
