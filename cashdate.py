@@ -1,6 +1,6 @@
 # ==============================
 # ULTRA FAST ASYNC MULTI PROPERTY AUTOMATION
-# HOURLY CASH ONLY REPORT
+# HOURLY CASH REPORT
 # ==============================
 
 import os
@@ -84,31 +84,23 @@ if not PROPERTIES:
 # ================= COLOR =================
 
 def get_hour_color(day_index: int, total_days: int = 31):
-    """
-    Unique color for each day in month.
-    Natural sun → sunset → night progression.
-    Works for 28–31 days.
-    """
 
     if total_days <= 1:
         total_days = 31
 
-    # Normalize position 0 → 1 across month
     t = day_index / (total_days - 1)
 
-    # Solar gradient anchors
     colors = [
-        (238, 243, 251),  # dawn blue
-        (217, 242, 255),  # morning sky
-        (255, 244, 204),  # sunlight
-        (255, 221, 128),  # noon warm
-        (255, 204, 153),  # evening
-        (255, 193, 193),  # sunset
-        (232, 234, 246),  # twilight
-        (227, 242, 253)   # night blue
+        (238, 243, 251),
+        (217, 242, 255),
+        (255, 244, 204),
+        (255, 221, 128),
+        (255, 204, 153),
+        (255, 193, 193),
+        (232, 234, 246),
+        (227, 242, 253)
     ]
 
-    # Map t across segments
     seg = t * (len(colors) - 1)
     i = int(seg)
     frac = seg - i
@@ -124,7 +116,6 @@ def get_hour_color(day_index: int, total_days: int = 31):
         b = int(b1 + (b2 - b1) * frac)
 
     return f"{r:02X}{g:02X}{b:02X}"
-
 
 
 # ================= FETCH DETAILS =================
@@ -191,8 +182,9 @@ async def fetch_booking_details(session, P, booking_no):
                     except Exception:
                         continue
 
-                    # ✅ CASH ONLY
-                    if p.get("mode") != "Cash at Hotel":
+                    mode_raw = p.get("mode", "")
+
+                    if mode_raw != "Cash at Hotel":
                         continue
 
                     events.append({
@@ -274,7 +266,6 @@ async def process_property(P, TF, TT, HF, HT):
                 detail_cache[booking_no] = res
                 return res
 
-        # ===== DATE MAP CASH ONLY =====
         date_map = {}
 
         d = tf_dt
@@ -339,7 +330,7 @@ async def process_property(P, TF, TT, HF, HT):
 
 # ================= RETRY =================
 
-async def run_property_with_retry(P, TF, TT, HF, HT, retries=3):
+async def run_property_with_retry(P, TF, TT, HF, HT, retries=5):
 
     last_error = None
 
@@ -370,7 +361,7 @@ async def run_property_limited(P, TF, TT, HF, HT):
 async def main():
 
     print("========================================")
-    print(" DATE-WISE CASH REPORT")
+    print(" DATE-WISE CASH COLLECTION REPORT")
     print("========================================")
 
     global now
@@ -410,11 +401,17 @@ async def main():
         pending = new_pending
 
         if pending:
+
+            if run_attempt == MAX_FULL_RUN_RETRIES:
+                failed_names = [p["name"] for p in pending.values()]
+                raise RuntimeError(
+                    f"FINAL FAILURE: Properties failed after retries: {failed_names}"
+                )
+
             await asyncio.sleep(FULL_RUN_RETRY_DELAY)
 
     valid_results = [success_results[k] for k in PROPERTIES.keys() if k in success_results]
 
-    # ================= EXCEL =================
     wb = Workbook()
     wb.remove(wb.active)
 
@@ -436,7 +433,6 @@ async def main():
         bottom=Side(style="thin", color="DDDDDD"),
     )
 
-    # ================= SHEET BUILDER =================
     def create_sheet(ws, date_map):
 
         ws.append(["Date", "Cash"])
@@ -453,14 +449,11 @@ async def main():
 
         for idx, d in enumerate(date_list):
 
-            row = date_map.get(d, {"cash":0})
+            row = date_map.get(d, {"cash": 0})
             cash = round(row["cash"], 2)
             sum_cash += cash
 
-            ws.append([
-                d.strftime("%d-%m-%Y"),
-                cash
-            ])
+            ws.append([d.strftime("%d-%m-%Y"), cash])
 
             r = ws.max_row
             fill = PatternFill("solid", fgColor=get_hour_color(idx, len(date_list)))
@@ -471,7 +464,7 @@ async def main():
                 cell.border = thin
                 cell.alignment = Alignment(horizontal="center")
 
-        ws.append(["TOTAL", round(sum_cash,2)])
+        ws.append(["TOTAL", round(sum_cash, 2)])
 
         total_row = ws.max_row
 
@@ -482,9 +475,8 @@ async def main():
             cell.alignment = Alignment(horizontal="center")
 
         ws.column_dimensions["A"].width = 15
-        ws.column_dimensions["B"].width = 14
+        ws.column_dimensions["B"].width = 18
 
-        # ===== CHART CASH ONLY =====
         chart = BarChart()
         chart.title = "Cash Trend"
         chart.height = 12
@@ -497,10 +489,19 @@ async def main():
         chart.add_data(data, titles_from_data=True)
         chart.set_categories(cats)
 
+        series = chart.series[0]
+        points = []
+
+        for idx in range(len(date_list)):
+            dp = DataPoint(idx=idx)
+            dp.graphicalProperties.solidFill = get_hour_color(idx, len(date_list))
+            points.append(dp)
+
+        series.dPt = points
+
         ws.add_chart(chart, f"A{ws.max_row + 3}")
 
 
-    # ================= PROPERTY SHEETS =================
     for name, date_map in valid_results:
 
         ws = wb.create_sheet(name[:31])
@@ -509,17 +510,12 @@ async def main():
         for d in date_list:
             consolidated[d]["cash"] += date_map[d]["cash"]
 
-
-    # ================= CONSOLIDATED =================
     ws = wb.create_sheet("CONSOLIDATED")
     create_sheet(ws, consolidated)
 
-
-    # ================= PROPERTY RANKING =================
     ranking_data = []
 
     for name, date_map in valid_results:
-
         total_cash = sum(v["cash"] for v in date_map.values())
 
         ranking_data.append({
@@ -541,6 +537,10 @@ async def main():
         c.fill = header_fill
         c.font = Font(bold=True, color="FFFFFF")
         c.alignment = Alignment(horizontal="center")
+
+    widths = [10, 28, 16, 18]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[chr(64+i)].width = w
 
     def get_medal(rank):
         if rank == 1:
@@ -575,8 +575,6 @@ async def main():
 
         rank += 1
 
-
-    # ================= SAVE + TELEGRAM =================
     buffer = BytesIO()
     wb.save(buffer)
     buffer.seek(0)
@@ -584,7 +582,7 @@ async def main():
     await send_telegram_excel_buffer(
         buffer,
         filename=f"Collection_{display_month}.xlsx",
-        caption="📊 Date-wise Cash Report"
+        caption="📊 Date-wise Cash Collection Report"
     )
 
     print("✅ EXCEL SENT SUCCESSFULLY")
