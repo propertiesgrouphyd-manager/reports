@@ -221,7 +221,9 @@ async def process_property(P, TF, TT, HF, HT):
 
         offset = 0
         seen_ids = set()
-        empty_page_streak = 0
+
+        empty_retry = 0
+        MAX_EMPTY_RETRY = 6
 
         while True:
 
@@ -230,18 +232,25 @@ async def process_property(P, TF, TT, HF, HT):
             if not data:
                 break
 
-            bookings = data.get("entities", {}).get("bookings", {})
             booking_ids = data.get("bookingIds", [])
+            bookings = data.get("entities", {}).get("bookings", {})
 
-            # ===== EMPTY PAGE GUARD =====
+            # ===== EMPTY PAGE RETRY =====
+
             if not booking_ids:
-                empty_page_streak += 1
-                if empty_page_streak >= 2:
+
+                empty_retry += 1
+
+                if empty_retry >= MAX_EMPTY_RETRY:
+                    print(f"⚠️ Pagination finished → {P['name']}")
                     break
-                offset += 100
+
+                await asyncio.sleep(2 + empty_retry)
                 continue
 
-            empty_page_streak = 0
+            empty_retry = 0
+
+            new_ids_found = 0
 
             # ================= LOOP BOOKINGS =================
 
@@ -251,6 +260,7 @@ async def process_property(P, TF, TT, HF, HT):
                     continue
 
                 seen_ids.add(bid)
+                new_ids_found += 1
 
                 status = (b.get("status") or "").strip()
 
@@ -282,14 +292,25 @@ async def process_property(P, TF, TT, HF, HT):
 
                 date_map[ci][src] += rooms
 
-            # ================= PAGINATION CONTROL =================
+            # ===== TERMINATION CONDITION =====
 
-            offset += len(booking_ids)
+            if new_ids_found == 0 and len(booking_ids) < 100:
+                print(f"⚠️ No new bookings → {P['name']}")
+                break
 
-            if len(booking_ids) < 100:
+            # ===== STABLE OFFSET INCREMENT (CRITICAL FIX) =====
+            offset += 100
+
+            # ===== SAFETY GUARD =====
+            if offset > 20000:
+                print(f"⚠️ Offset safety stop → {P['name']}")
                 break
 
     return (P["name"], date_map)
+
+
+
+
 
 # ================= RETRY =================
 
