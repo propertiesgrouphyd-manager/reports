@@ -427,7 +427,7 @@ async def main():
                 cell.border = thin
                 cell.alignment = Alignment(horizontal="center")
 
-        ws.append(["","TOTAL","",*totals,sum(totals)])
+        ws.append(["", "TOTAL", *totals, sum(totals)])
 
         total_row = ws.max_row
 
