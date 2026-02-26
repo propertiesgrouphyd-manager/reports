@@ -106,6 +106,8 @@ async def send_telegram_message(text, retries=3, session=None):
 
     raise RuntimeError("Telegram send failed")
 
+
+
 # ================= BEAUTIFY EXCEL =================
 def beautify(ws):
     blue = PatternFill("solid", fgColor="1F4E78")
@@ -1490,6 +1492,11 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except Exception as e:
+        print("SCRIPT CRASHED")
+        print(e)
+        traceback.print_exc()
+        print("SCRIPT CRASHED", e, flush=True)
+
         print("SCRIPT CRASHED")
         print(e)
         traceback.print_exc()
