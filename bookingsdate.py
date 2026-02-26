@@ -220,8 +220,8 @@ async def process_property(P, TF, TT, HF, HT):
     async with aiohttp.ClientSession() as session:
 
         offset = 0
-        seen_ids = set()          # ⭐ prevents pagination skip / duplicates
-        empty_page_streak = 0     # ⭐ safe termination guard
+        seen_ids = set()
+        empty_page_streak = 0
 
         while True:
 
@@ -231,8 +231,10 @@ async def process_property(P, TF, TT, HF, HT):
                 break
 
             bookings = data.get("entities", {}).get("bookings", {})
+            booking_ids = data.get("bookingIds", [])
 
-            if not bookings:
+            # ===== EMPTY PAGE GUARD =====
+            if not booking_ids:
                 empty_page_streak += 1
                 if empty_page_streak >= 2:
                     break
@@ -245,7 +247,6 @@ async def process_property(P, TF, TT, HF, HT):
 
             for bid, b in bookings.items():
 
-                # ⭐ DEDUP FIX
                 if bid in seen_ids:
                     continue
 
@@ -256,22 +257,17 @@ async def process_property(P, TF, TT, HF, HT):
                 if status not in ["Checked In", "Checked Out"]:
                     continue
 
-                # ================= CHECKIN ONLY =================
-
                 checkin_str = b.get("checkin")
-
                 if not checkin_str:
                     continue
 
                 try:
                     ci = datetime.strptime(checkin_str, "%Y-%m-%d").date()
-                except Exception:
+                except:
                     continue
 
                 if not (tf_dt <= ci <= tt_dt):
                     continue
-
-                # ================= SOURCE =================
 
                 src = get_booking_source(b)
 
@@ -288,13 +284,12 @@ async def process_property(P, TF, TT, HF, HT):
 
             # ================= PAGINATION CONTROL =================
 
-            if len(bookings) < 100:
+            offset += len(booking_ids)
+
+            if len(booking_ids) < 100:
                 break
 
-            offset += 100
-
     return (P["name"], date_map)
-
 
 # ================= RETRY =================
 
