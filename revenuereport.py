@@ -171,9 +171,11 @@ async def fetch_booking_details(session, P, booking_no):
                     else:
                         online += amt
 
-                balance = float(booking.get("payable_amount", 0) or 0)
+                # ✅ CORRECT BALANCE LOGIC
+                paid = float(booking.get("get_amount_paid") or 0)
+                balance = float(booking.get("payable_amount") or 0)
 
-                return cash, qr, online, discount, balance
+                return cash, qr, online, discount, balance, paid
 
         except Exception:
             await asyncio.sleep(2 + attempt)
@@ -235,19 +237,13 @@ async def process_property(P, TF, TT, HF, HT):
     async with aiohttp.ClientSession() as session:
 
         detail_semaphore = asyncio.Semaphore(DETAIL_PARALLEL_LIMIT)
-        detail_cache = {}
 
         async def limited_detail_call(booking_no):
             async with detail_semaphore:
-                if booking_no in detail_cache:
-                    return detail_cache[booking_no]
-                res = await fetch_booking_details(session, P, booking_no)
-                detail_cache[booking_no] = res
-                return res
+                return await fetch_booking_details(session, P, booking_no)
 
-        # ===== DATE MAP =====
+        # DATE MAP
         date_map = {}
-
         d = tf_dt
         while d <= tt_dt:
             date_map[d] = {
@@ -286,17 +282,8 @@ async def process_property(P, TF, TT, HF, HT):
                 if not booking_no:
                     continue
 
-                ci_str = b.get("checkin")
-                co_str = b.get("checkout")
-
-                if not ci_str or not co_str:
-                    continue
-
-                try:
-                    ci = datetime.strptime(ci_str, "%Y-%m-%d").date()
-                    co = datetime.strptime(co_str, "%Y-%m-%d").date()
-                except:
-                    continue
+                ci = datetime.strptime(b["checkin"], "%Y-%m-%d").date()
+                co = datetime.strptime(b["checkout"], "%Y-%m-%d").date()
 
                 if co <= ci:
                     continue
@@ -311,7 +298,7 @@ async def process_property(P, TF, TT, HF, HT):
                 if isinstance(res, Exception):
                     continue
 
-                cash, qr, online, discount, balance = res
+                cash, qr, online, discount, balance, paid = res
 
                 stay_days = max((co - ci).days, 1)
 
@@ -352,8 +339,6 @@ async def process_property(P, TF, TT, HF, HT):
 
 async def run_property_with_retry(P, TF, TT, HF, HT, retries=5):
 
-    last_error = None
-
     for attempt in range(1, retries + 1):
 
         try:
@@ -361,11 +346,10 @@ async def run_property_with_retry(P, TF, TT, HF, HT, retries=5):
 
         except Exception as e:
 
-            last_error = e
             print(f"RETRY {attempt}/{retries} → {P['name']} :: {e}")
             await asyncio.sleep(2 + attempt * 2)
 
-    raise RuntimeError(f"PROPERTY FAILED → {P['name']}") from last_error
+    raise RuntimeError(f"PROPERTY FAILED → {P['name']}")
 
 
 async def run_property_limited(P, TF, TT, HF, HT):
@@ -377,8 +361,6 @@ async def run_property_limited(P, TF, TT, HF, HT):
 
 async def main():
 
-    # ===== CURRENT MONTH → YESTERDAY =====
-
     target_date = (now - timedelta(days=1)).date()
 
     TF = target_date.replace(day=1).strftime("%Y-%m-%d")
@@ -388,8 +370,6 @@ async def main():
     HT = TT
 
     display_month = target_date.strftime("%B %Y")
-
-    # ================= RETRY ENGINE =================
 
     pending = {k: v for k, v in PROPERTIES.items()}
     success_results = {}
@@ -449,8 +429,6 @@ async def main():
         bottom=Side(style="thin", color="DDDDDD"),
     )
 
-    # ================= SHEET BUILDER =================
-
     def create_sheet(ws, date_map):
 
         ws.append(["Date","Cash","QR","Online","Discount","Balance","Total"])
@@ -462,6 +440,11 @@ async def main():
             c.fill = header_fill
             c.font = Font(bold=True,color="FFFFFF")
             c.alignment = Alignment(horizontal="center")
+
+        # Column widths
+        widths = [16,14,14,14,14,14,18]
+        for i,w in enumerate(widths, start=1):
+            ws.column_dimensions[chr(64+i)].width = w
 
         sum_cash=sum_qr=sum_online=sum_discount=sum_balance=sum_total=0
 
@@ -515,40 +498,42 @@ async def main():
             cell.font=Font(bold=True,color="FFFFFF")
             cell.alignment=Alignment(horizontal="center")
 
+
         # ===== CHARTS =====
 
-        chart_titles=["Cash","QR","Online","Discount","Balance","Total"]
+        chart_titles = ["Cash","QR","Online","Discount","Balance","Total"]
 
-        base_row=ws.max_row+3
-        gap=22
+        base_row = ws.max_row + 3
+        gap = 22
 
-        for i,col in enumerate(range(2,8)):
+        for i, col in enumerate(range(2, 8)):
 
-            chart=BarChart()
-            chart.title=f"{chart_titles[i]} Trend"
-            chart.height=12
-            chart.width=26
-            chart.legend=None
+            chart = BarChart()
+            chart.title = f"{chart_titles[i]} Trend"
+            chart.height = 12
+            chart.width = 26
+            chart.legend = None
 
-            data=Reference(ws,min_col=col,min_row=1,max_row=len(date_list)+1)
-            cats=Reference(ws,min_col=1,min_row=2,max_row=len(date_list)+1)
+            data = Reference(ws, min_col=col, min_row=1, max_row=len(date_list)+1)
+            cats = Reference(ws, min_col=1, min_row=2, max_row=len(date_list)+1)
 
-            chart.add_data(data,titles_from_data=True)
+            chart.add_data(data, titles_from_data=True)
             chart.set_categories(cats)
 
-            series=chart.series[0]
-            pts=[]
+            series = chart.series[0]
+            pts = []
 
             for idx in range(len(date_list)):
-                dp=DataPoint(idx=idx)
-                dp.graphicalProperties.solidFill=get_hour_color(idx,len(date_list))
+                dp = DataPoint(idx=idx)
+                dp.graphicalProperties.solidFill = get_hour_color(idx, len(date_list))
                 pts.append(dp)
 
-            series.dPt=pts
+            series.dPt = pts
 
-            ws.add_chart(chart,f"A{base_row+i*gap}")
+            ws.add_chart(chart, f"A{base_row + i*gap}")
 
-    # ================= PROPERTY SHEETS =================
+
+
 
     ranking=[]
 
@@ -567,8 +552,6 @@ async def main():
 
         ranking.append({"name":name,"total":total_prop})
 
-    # ================= CONSOLIDATED =================
-
     ws=wb.create_sheet("CONSOLIDATED")
     create_sheet(ws,consolidated)
 
@@ -576,7 +559,20 @@ async def main():
 
     ws=wb.create_sheet("PROPERTY RANKING")
 
-    ws.append(["Rank","Property","Total","Badge"])
+    headers=["Rank","Property","Total","Badge"]
+    ws.append(headers)
+
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+
+    for col in range(1,5):
+        c=ws.cell(row=1,column=col)
+        c.fill=header_fill
+        c.font=Font(bold=True,color="FFFFFF")
+        c.alignment=Alignment(horizontal="center")
+
+    widths=[10,28,16,18]
+    for i,w in enumerate(widths,start=1):
+        ws.column_dimensions[chr(64+i)].width=w
 
     ranking.sort(key=lambda x:x["total"], reverse=True)
 
@@ -587,11 +583,20 @@ async def main():
         return ""
 
     rnk=1
-    for p in ranking:
-        ws.append([rnk,p["name"],round(p["total"],2),medal(rnk)])
-        rnk+=1
+    for idx,p in enumerate(ranking):
 
-    # ================= SEND =================
+        ws.append([rnk,p["name"],round(p["total"],2),medal(rnk)])
+
+        r=ws.max_row
+        fill=PatternFill("solid", fgColor=get_hour_color(idx,len(ranking)))
+
+        for c in range(1,5):
+            cell=ws.cell(row=r,column=c)
+            cell.fill=fill
+            cell.border=thin
+            cell.alignment=Alignment(horizontal="center")
+
+        rnk+=1
 
     buffer=BytesIO()
     wb.save(buffer)
@@ -603,8 +608,6 @@ async def main():
         caption="📊 Per-Day Stay Collection Report"
     )
 
-
-# ================= RUN =================
 
 if __name__ == "__main__":
 
