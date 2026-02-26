@@ -333,29 +333,65 @@ async def main():
 
     # ================= FETCH =================
 
-    pending = {k:v for k,v in PROPERTIES.items()}
-    success = {}
+    # ================= FETCH =================
 
-    for _ in range(MAX_FULL_RUN_RETRIES):
+    pending = {k: v for k, v in PROPERTIES.items()}
+    success_results = {}
+
+    for run_attempt in range(1, MAX_FULL_RUN_RETRIES + 1):
 
         if not pending:
             break
+
+        print(f"\n🔁 PARTIAL RUN ATTEMPT {run_attempt}/{MAX_FULL_RUN_RETRIES}")
+        print(f"⏳ Pending Properties: {len(pending)}")
 
         tasks = [run_property_limited(P, TF, TT, HF, HT) for P in pending.values()]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         new_pending = {}
 
-        for key,(P,res) in zip(list(pending.keys()), zip(pending.values(), results)):
+        for key, (P, result) in zip(list(pending.keys()), zip(pending.values(), results)):
 
-            if isinstance(res, Exception):
+            if isinstance(result, Exception):
+                print(f"❌ FAILED → {P['name']} :: {result}")
                 new_pending[key] = P
-            else:
-                success[key] = res
+                continue
+
+            success_results[key] = result
+            print(f"✅ OK → {P['name']}")
 
         pending = new_pending
 
-    results = [success[k] for k in PROPERTIES if k in success]
+        if pending:
+
+            if run_attempt == MAX_FULL_RUN_RETRIES:
+                failed_names = [p["name"] for p in pending.values()]
+                raise RuntimeError(
+                    f"FINAL FAILURE: Properties failed after retries: {failed_names}"
+                )
+
+            print(f"🔁 RETRYING FAILED PROPERTIES AFTER {FULL_RUN_RETRY_DELAY}s...")
+            await asyncio.sleep(FULL_RUN_RETRY_DELAY)
+
+
+    # ================= FINAL VERIFICATION =================
+
+    if len(success_results) != len(PROPERTIES):
+        missing = [
+            PROPERTIES[k]["name"]
+            for k in PROPERTIES.keys()
+            if k not in success_results
+        ]
+        raise RuntimeError(f"DATA INCOMPLETE: Missing properties: {missing}")
+
+
+    results = [
+        success_results[k]
+        for k in PROPERTIES.keys()
+        if k in success_results
+    ]
+
 
     # ================= DATE LIST =================
 
