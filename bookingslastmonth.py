@@ -342,13 +342,18 @@ async def main():
 
     # ================= FETCH =================
 
+    # ================= FETCH =================
+
     pending = {k:v for k,v in PROPERTIES.items()}
     success = {}
 
-    for _ in range(MAX_FULL_RUN_RETRIES):
+    for run_attempt in range(1, MAX_FULL_RUN_RETRIES + 1):
 
         if not pending:
             break
+
+        print(f"\n🔁 PARTIAL RUN ATTEMPT {run_attempt}/{MAX_FULL_RUN_RETRIES}")
+        print(f"⏳ Pending Properties: {len(pending)}")
 
         tasks = [run_property_limited(P, TF, TT, HF, HT) for P in pending.values()]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -358,13 +363,50 @@ async def main():
         for key,(P,res) in zip(list(pending.keys()), zip(pending.values(), results)):
 
             if isinstance(res, Exception):
+                print(f"❌ FAILED → {P['name']} :: {res}")
                 new_pending[key] = P
             else:
                 success[key] = res
+                print(f"✅ OK → {P['name']}")
 
         pending = new_pending
 
-    results = [success[k] for k in PROPERTIES if k in success]
+        if pending:
+
+            if run_attempt == MAX_FULL_RUN_RETRIES:
+
+                failed_names = [p["name"] for p in pending.values()]
+
+                raise RuntimeError(
+                    f"FINAL FAILURE: Properties failed after retries: {failed_names}"
+                )
+
+            print(f"🔁 RETRYING FAILED PROPERTIES AFTER {FULL_RUN_RETRY_DELAY}s...")
+            await asyncio.sleep(FULL_RUN_RETRY_DELAY)
+
+
+    # ================= FINAL VERIFICATION =================
+
+    if len(success) != len(PROPERTIES):
+
+        missing = [
+            PROPERTIES[k]["name"]
+            for k in PROPERTIES.keys()
+            if k not in success
+        ]
+
+        raise RuntimeError(
+            f"DATA INCOMPLETE: Missing properties after retries: {missing}"
+        )
+
+
+    results = [
+        success[k]
+        for k in PROPERTIES.keys()
+        if k in success
+    ]
+
+    
 
     # ================= DATE LIST =================
 
