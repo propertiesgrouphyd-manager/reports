@@ -238,9 +238,16 @@ async def process_property(P, TF, TT, HF, HT):
 
                 dt = dt.astimezone(IST)
 
-                event_date = dt.date()
+                checkin_str = b.get("checkin")
+                if not checkin_str:
+                    continue
 
-                if not (tf_dt <= event_date <= tt_dt):
+                try:
+                    ci = datetime.strptime(checkin_str, "%Y-%m-%d").date()
+                except:
+                    continue
+
+                if not (tf_dt <= ci <= tt_dt):
                     continue
 
                 hour = dt.hour
