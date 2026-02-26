@@ -681,7 +681,7 @@ async def main():
 
     await send_telegram_excel_buffer(
         buffer,
-        filename=f"Collection_{display_month}.xlsx",
+        filename=f"Collection_Monthly.xlsx",
         caption="📊 Date-wise Collection Report"
     )
 
