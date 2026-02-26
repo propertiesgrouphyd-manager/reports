@@ -268,22 +268,21 @@ async def process_property(P, TF, TT, HF, HT):
                     continue
 
                 checkin_str = b.get("checkin")
-                checkout_str = b.get("checkout")
-
-                if not checkin_str or not checkout_str:
+                if not checkin_str:
                     continue
 
                 try:
                     ci = datetime.strptime(checkin_str, "%Y-%m-%d").date()
-                    co = datetime.strptime(checkout_str, "%Y-%m-%d").date()
                 except:
                     continue
 
-                # invalid stay guard
-                if co <= ci:
+                if not (tf_dt <= ci <= tt_dt):
                     continue
 
                 src = get_booking_source(b)
+
+                if src not in date_map[ci]:
+                    src = "OBA"
 
                 rooms = int(
                     b.get("no_of_rooms")
@@ -291,18 +290,7 @@ async def process_property(P, TF, TT, HF, HT):
                     or 1
                 )
 
-                # iterate stay nights (checkout excluded)
-                stay_day = ci
-
-                while stay_day < co:
-
-                    if tf_dt <= stay_day <= tt_dt:
-
-                        src_key = src if src in date_map[stay_day] else "OBA"
-                            
-                        date_map[stay_day][src_key] += rooms
-
-                    stay_day += timedelta(days=1)
+                date_map[ci][src] += rooms
 
             # ===== TERMINATION CONDITION =====
 
