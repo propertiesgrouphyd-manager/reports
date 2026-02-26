@@ -426,7 +426,7 @@ async def main():
             if k not in success_results
         ]
 
-    raise RuntimeError(f"DATA INCOMPLETE: Missing properties: {missing}")
+        raise RuntimeError(f"DATA INCOMPLETE: Missing properties: {missing}")
 
     wb = Workbook()
     wb.remove(wb.active)
