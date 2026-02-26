@@ -164,8 +164,6 @@ async def fetch_bookings_batch(session, offset, f, t, P):
         return await r.json()
 
 
-# ================= PROCESS PROPERTY =================
-
 async def process_property(P, TF, TT, HF, HT):
 
     print(f"PROCESSING → {P['name']}")
@@ -173,9 +171,12 @@ async def process_property(P, TF, TT, HF, HT):
     tf_dt = datetime.strptime(TF, "%Y-%m-%d").date()
     tt_dt = datetime.strptime(TT, "%Y-%m-%d").date()
 
+    # ===== HOURLY MAP =====
     hourly_map = {
-        h: {"OYO":0,"Walk-in":0,"MMT":0,"BDC":0,
-            "Agoda":0,"CB":0,"TA":0,"OBA":0}
+        h: {
+            "OYO":0,"Walk-in":0,"MMT":0,"BDC":0,
+            "Agoda":0,"CB":0,"TA":0,"OBA":0
+        }
         for h in range(24)
     }
 
@@ -191,44 +192,61 @@ async def process_property(P, TF, TT, HF, HT):
                 break
 
             bookings = data.get("entities", {}).get("bookings", {})
+            if not bookings:
+                break
 
             for b in bookings.values():
 
                 status = (b.get("status") or "").strip()
 
+                # ===== SAME STATUS LOGIC AS WORKING SCRIPT =====
                 if status not in ["Checked In", "Checked Out"]:
                     continue
 
+                # ===== FILTER USING CHECKIN DATE (CRITICAL FIX) =====
+                checkin_str = b.get("checkin")
+                if not checkin_str:
+                    continue
+
+                try:
+                    ci_date = datetime.strptime(checkin_str, "%Y-%m-%d").date()
+                except:
+                    continue
+
+                if not (tf_dt <= ci_date <= tt_dt):
+                    continue
+
+                # ===== EXTRACT HOUR FROM CHECKIN_TIME =====
                 checkin_time = b.get("checkin_time")
                 if not checkin_time:
                     continue
 
                 try:
-                    ci_dt = datetime.fromisoformat(checkin_time)
-                    ci_dt = ci_dt.astimezone(IST)
+                    ci_dt = datetime.fromisoformat(
+                        checkin_time.replace("Z", "+00:00")
+                    )
                 except:
-                    continue
-
-                if not (tf_dt <= ci_dt.date() <= tt_dt):
                     continue
 
                 hour = ci_dt.hour
 
+                # ===== BOOKING SOURCE =====
                 src = get_booking_source(b)
                 if src not in hourly_map[hour]:
                     src = "OBA"
 
+                # ===== ROOMS COUNT =====
                 rooms = int(b.get("no_of_rooms", 1) or 1)
 
                 hourly_map[hour][src] += rooms
 
+            # ===== PAGINATION =====
             if len(data.get("bookingIds", [])) < 100:
                 break
 
             offset += 100
 
     return (P["name"], hourly_map)
-
 
 # ================= RETRY =================
 
