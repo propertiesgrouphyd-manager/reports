@@ -606,7 +606,7 @@ async def main():
 
     await send_telegram_excel_buffer(
         buffer,
-        filename=f"Booking_Mode_{display_month}.xlsx",
+        filename=f"Bookings_Monthly.xlsx",
         caption="📊 Date-wise Booking Mode Report"
     )
 
