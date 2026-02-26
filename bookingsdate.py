@@ -164,6 +164,29 @@ async def fetch_bookings_batch(session, offset, f, t, P):
         return await r.json()
 
 
+
+
+def parse_oyo_time(val):
+
+    if not val:
+        return None
+
+    s = str(val).replace("Z", "+00:00").strip()
+
+    try:
+        dt = datetime.fromisoformat(s)
+    except:
+        try:
+            dt = datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+        except:
+            return None
+
+    # ===== ENSURE TZ =====
+    if dt.tzinfo is None:
+        dt = IST.localize(dt)
+
+    return dt
+
 # ================= PROCESS PROPERTY =================
 
 async def process_property(P, TF, TT, HF, HT):
@@ -201,38 +224,37 @@ async def process_property(P, TF, TT, HF, HT):
                 if status not in ["Checked In", "Checked Out"]:
                     continue
 
-                checkin_str = b.get("checkin")
-                if not checkin_str:
+                # ===== TIME SOURCE (FIXED) =====
+                time_raw = (
+                    b.get("checkin_time")
+                    or b.get("created_at")
+                    or b.get("inserted_at")
+                )
+
+                dt = parse_oyo_time(time_raw)
+
+                if not dt:
                     continue
 
-                try:
-                    ci = datetime.strptime(checkin_str, "%Y-%m-%d").date()
-                except:
+                dt = dt.astimezone(IST)
+
+                event_date = dt.date()
+
+                if not (tf_dt <= event_date <= tt_dt):
                     continue
 
-                if not (tf_dt <= ci <= tt_dt):
-                    continue
-
-                checkin_time = b.get("checkin_time")
-                if not checkin_time:
-                    continue
-
-                try:
-                    ci_dt = datetime.fromisoformat(
-                        checkin_time.replace("Z", "+00:00")
-                    )
-                    ci_dt = ci_dt.astimezone(IST)
-                except:
-                    continue
-
-                hour = ci_dt.hour
+                hour = dt.hour
 
                 src = get_booking_source(b)
 
                 if src not in hourly_map[hour]:
                     src = "OBA"
 
-                rooms = int(b.get("no_of_rooms", 1) or 1)
+                rooms = int(
+                    b.get("no_of_rooms")
+                    or b.get("oyo_rooms")
+                    or 1
+                )
 
                 hourly_map[hour][src] += rooms
 
