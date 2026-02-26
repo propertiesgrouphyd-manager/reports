@@ -194,7 +194,7 @@ async def fetch_bookings_batch(session, offset, f, t, P):
         return await r.json()
 
 
-# ================= PROCESS PROPERTY =================
+
 
 async def process_property(P, TF, TT, HF, HT):
 
@@ -203,7 +203,8 @@ async def process_property(P, TF, TT, HF, HT):
     tf_dt = datetime.strptime(TF, "%Y-%m-%d").date()
     tt_dt = datetime.strptime(TT, "%Y-%m-%d").date()
 
-    # date map
+    # ================= DATE MAP =================
+
     date_map = {}
 
     d = tf_dt
@@ -214,48 +215,80 @@ async def process_property(P, TF, TT, HF, HT):
         }
         d += timedelta(days=1)
 
+    # ================= SESSION =================
+
     async with aiohttp.ClientSession() as session:
 
         offset = 0
+        seen_ids = set()          # ⭐ prevents pagination skip / duplicates
+        empty_page_streak = 0     # ⭐ safe termination guard
 
         while True:
 
             data = await fetch_bookings_batch(session, offset, HF, HT, P)
 
-            if not data or not data.get("bookingIds"):
+            if not data:
                 break
 
             bookings = data.get("entities", {}).get("bookings", {})
 
-            for b in bookings.values():
+            if not bookings:
+                empty_page_streak += 1
+                if empty_page_streak >= 2:
+                    break
+                offset += 100
+                continue
+
+            empty_page_streak = 0
+
+            # ================= LOOP BOOKINGS =================
+
+            for bid, b in bookings.items():
+
+                # ⭐ DEDUP FIX
+                if bid in seen_ids:
+                    continue
+
+                seen_ids.add(bid)
 
                 status = (b.get("status") or "").strip()
 
                 if status not in ["Checked In", "Checked Out"]:
                     continue
 
+                # ================= CHECKIN ONLY =================
+
                 checkin_str = b.get("checkin")
+
                 if not checkin_str:
                     continue
 
                 try:
                     ci = datetime.strptime(checkin_str, "%Y-%m-%d").date()
-                except:
+                except Exception:
                     continue
 
                 if not (tf_dt <= ci <= tt_dt):
                     continue
+
+                # ================= SOURCE =================
 
                 src = get_booking_source(b)
 
                 if src not in date_map[ci]:
                     src = "OBA"
 
-                rooms = int(b.get("no_of_rooms", 1) or 1)
+                rooms = int(
+                    b.get("no_of_rooms")
+                    or b.get("oyo_rooms")
+                    or 1
+                )
 
                 date_map[ci][src] += rooms
 
-            if len(data.get("bookingIds", [])) < 100:
+            # ================= PAGINATION CONTROL =================
+
+            if len(bookings) < 100:
                 break
 
             offset += 100
