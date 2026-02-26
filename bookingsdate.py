@@ -441,7 +441,7 @@ async def main():
         start_chart_row = ws.max_row + 3
         chart_gap = 22
 
-        for i,col in enumerate(range(3,11)):
+        for i,col in enumerate(range(3,12)):
 
             chart = BarChart()
             chart.height = 12
