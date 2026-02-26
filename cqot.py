@@ -626,7 +626,7 @@ async def main():
 
     await send_telegram_excel_buffer(
         buffer,
-        filename=f"Collection_{display_date}.xlsx",
+        filename=f"Collection_Daily.xlsx",
         caption="📊 Hourly Collection Report"
     )
 
