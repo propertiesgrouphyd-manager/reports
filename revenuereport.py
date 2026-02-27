@@ -357,6 +357,59 @@ async def run_property_limited(P, TF, TT, HF, HT):
         return await run_property_with_retry(P, TF, TT, HF, HT)
 
 
+
+
+def autofit_columns(ws):
+
+    """
+    Universal Excel AutoFit
+    Works for all report types:
+    - Date columns
+    - Time columns
+    - Property names
+    - Numeric values
+    - Ranking sheets
+    - Consolidated sheets
+
+    Safe for charts (does not affect chart placement)
+    """
+
+    from openpyxl.utils import get_column_letter
+
+    for col_idx, column_cells in enumerate(ws.columns, start=1):
+
+        max_length = 0
+        col_letter = get_column_letter(col_idx)
+
+        for cell in column_cells:
+            try:
+                if cell.value is not None:
+                    max_length = max(max_length, len(str(cell.value)))
+            except:
+                pass
+
+        # ===== BASE WIDTH CALCULATION =====
+        adjusted_width = (max_length * 1.25) + 3
+
+        # ===== SMART COLUMN RULES =====
+
+        # Column A → Date / Rank
+        if col_letter == "A":
+            adjusted_width = max(adjusted_width, 16)
+
+        # Column B → Property name / Time column
+        elif col_letter == "B":
+            adjusted_width = max(adjusted_width, 26)
+
+        # Numeric columns
+        else:
+            adjusted_width = max(adjusted_width, 14)
+
+        # ===== HARD LIMITS =====
+        adjusted_width = min(adjusted_width, 45)
+
+        ws.column_dimensions[col_letter].width = adjusted_width
+
 # ================= MAIN =================
 
 async def main():
@@ -541,6 +594,7 @@ async def main():
 
         ws=wb.create_sheet(name[:31])
         create_sheet(ws,date_map)
+        autofit_columns(ws)
 
         total_prop=0
 
@@ -554,6 +608,7 @@ async def main():
 
     ws=wb.create_sheet("CONSOLIDATED")
     create_sheet(ws,consolidated)
+    autofit_columns(ws)
 
     # ================= RANKING =================
 
@@ -597,6 +652,7 @@ async def main():
             cell.alignment=Alignment(horizontal="center")
 
         rnk+=1
+    autofit_columns(ws)
 
     buffer=BytesIO()
     wb.save(buffer)
