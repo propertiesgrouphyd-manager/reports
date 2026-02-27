@@ -625,9 +625,6 @@ async def main():
         c.font=Font(bold=True,color="FFFFFF")
         c.alignment=Alignment(horizontal="center")
 
-    widths=[10,28,16,18]
-    for i,w in enumerate(widths,start=1):
-        ws.column_dimensions[chr(64+i)].width=w
 
     ranking.sort(key=lambda x:x["total"], reverse=True)
 
