@@ -1,6 +1,6 @@
 # ==============================
 # ULTRA FAST ASYNC MULTI PROPERTY AUTOMATION
-# HOURLY CASH + QR + ONLINE + TOTAL REPORT
+# HOURLY CASH + QR + ONLINE + DISCOUNT + TOTAL REPORT
 # ==============================
 
 import os
@@ -168,7 +168,7 @@ async def fetch_booking_details(session, P, booking_no):
                     elif mode_raw == "UPI QR":
                         bucket = "qr"
                     elif mode_raw == "oyo_wizard_discount":
-                        continue
+                        bucket = "discount"
                     else:
                         bucket = "online"
 
@@ -257,7 +257,7 @@ async def process_property(P, TF, TT, HF, HT):
 
 
         hourly_cash = {
-            h: {"cash":0.0,"qr":0.0,"online":0.0,"total":0.0}
+            h: {"cash":0.0,"qr":0.0,"online":0.0,"discount":0.0,"total":0.0}
             for h in range(24)
         }
 
@@ -275,7 +275,6 @@ async def process_property(P, TF, TT, HF, HT):
                 break
 
             tasks = []
-            mapping = []
 
             for b in bookings.values():
 
@@ -290,7 +289,6 @@ async def process_property(P, TF, TT, HF, HT):
                     continue
 
                 tasks.append(limited_detail_call(booking_no))
-                mapping.append(b)
 
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -406,7 +404,7 @@ async def main():
     wb.remove(wb.active)
 
     consolidated = {
-        h: {"cash":0.0,"qr":0.0,"online":0.0,"total":0.0}
+        h: {"cash":0.0,"qr":0.0,"online":0.0,"discount":0.0,"total":0.0}
         for h in range(24)
     }
 
@@ -424,30 +422,32 @@ async def main():
 
     def create_sheet(ws, hourly_cash):
 
-        ws.append(["Date", "Time (Hourly)", "Cash", "QR", "Online", "Total"])
+        ws.append(["Date", "Time (Hourly)", "Cash", "QR", "Online", "Discount", "Total"])
 
         header_fill = PatternFill("solid", fgColor="1F4E78")
 
-        for col in range(1, 7):
+        for col in range(1, 8):
             c = ws.cell(row=1, column=col)
             c.fill = header_fill
             c.font = Font(bold=True, color="FFFFFF")
             c.alignment = Alignment(horizontal="center")
 
-        sum_cash = sum_qr = sum_online = sum_total = 0
+        sum_cash = sum_qr = sum_online = sum_discount = sum_total = 0
 
         for h in range(24):
 
-            row = hourly_cash.get(h, {"cash":0,"qr":0,"online":0,"total":0})
+            row = hourly_cash.get(h, {"cash":0,"qr":0,"online":0,"discount":0,"total":0})
 
             cash = round(row["cash"], 2)
             qr = round(row["qr"], 2)
             online = round(row["online"], 2)
+            discount = round(row["discount"], 2)
             total = round(row["total"], 2)
 
             sum_cash += cash
             sum_qr += qr
             sum_online += online
+            sum_discount += discount
             sum_total += total
 
             ws.append([
@@ -456,13 +456,14 @@ async def main():
                 cash,
                 qr,
                 online,
+                discount,
                 total
             ])
 
             r = ws.max_row
             fill = PatternFill("solid", fgColor=get_hour_color(h))
 
-            for c in range(1, 7):
+            for c in range(1, 8):
                 cell = ws.cell(row=r, column=c)
                 cell.fill = fill
                 cell.border = thin
@@ -474,12 +475,13 @@ async def main():
             round(sum_cash,2),
             round(sum_qr,2),
             round(sum_online,2),
+            round(sum_discount,2),
             round(sum_total,2)
         ])
 
         total_row = ws.max_row
 
-        for c in range(1, 7):
+        for c in range(1, 8):
             cell = ws.cell(row=total_row, column=c)
             cell.fill = PatternFill("solid", fgColor="000000")
             cell.font = Font(bold=True, color="FFFFFF")
@@ -490,14 +492,15 @@ async def main():
         ws.column_dimensions["C"].width = 12
         ws.column_dimensions["D"].width = 12
         ws.column_dimensions["E"].width = 12
-        ws.column_dimensions["F"].width = 14
+        ws.column_dimensions["F"].width = 12
+        ws.column_dimensions["G"].width = 14
 
-        chart_titles = ["Cash", "QR", "Online", "Total"]
+        chart_titles = ["Cash", "QR", "Online", "Discount", "Total"]
 
         base_chart_row = ws.max_row + 3
-        chart_gap = 22   # 🔥 spacing between charts (fix overlap)
+        chart_gap = 22
 
-        for i, col in enumerate(range(3, 7)):
+        for i, col in enumerate(range(3, 8)):
 
             chart = BarChart()
             chart.title = f"Hourly {chart_titles[i]}"
@@ -524,9 +527,6 @@ async def main():
             chart_row = base_chart_row + (i * chart_gap)
             ws.add_chart(chart, f"A{chart_row}")
 
-        footer_row = base_chart_row + (len(chart_titles) * chart_gap) + 2
-    
-
 
     for name, hourly_cash in valid_results:
 
@@ -541,6 +541,7 @@ async def main():
     ws = wb.create_sheet("CONSOLIDATED")
     create_sheet(ws, consolidated)
 
+
     # ================= PROPERTY RANKING =================
 
     ranking_data = []
@@ -550,6 +551,7 @@ async def main():
         total_cash = sum(v["cash"] for v in hourly_cash.values())
         total_qr = sum(v["qr"] for v in hourly_cash.values())
         total_online = sum(v["online"] for v in hourly_cash.values())
+        total_discount = sum(v["discount"] for v in hourly_cash.values())
         total_total = sum(v["total"] for v in hourly_cash.values())
 
         ranking_data.append({
@@ -557,6 +559,7 @@ async def main():
             "cash": total_cash,
             "qr": total_qr,
             "online": total_online,
+            "discount": total_discount,
             "total": total_total
         })
 
@@ -564,18 +567,18 @@ async def main():
 
     ws = wb.create_sheet("PROPERTY RANKING")
 
-    headers = ["Rank", "Property", "Cash", "QR", "Online", "Total", "Badge"]
+    headers = ["Rank", "Property", "Cash", "QR", "Online", "Discount", "Total", "Badge"]
     ws.append(headers)
 
     header_fill = PatternFill("solid", fgColor="1F4E78")
 
-    for col in range(1, 8):
+    for col in range(1, 9):
         c = ws.cell(row=1, column=col)
         c.fill = header_fill
         c.font = Font(bold=True, color="FFFFFF")
         c.alignment = Alignment(horizontal="center")
 
-    widths = [10, 28, 14, 14, 14, 16, 18]
+    widths = [10, 28, 14, 14, 14, 14, 16, 18]
 
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[chr(64+i)].width = w
@@ -593,23 +596,24 @@ async def main():
     rank = 1
 
     for idx, p in enumerate(ranking_data):
+
         medal = get_medal(rank)
-    
+
         ws.append([
             rank,
             p["name"],
             round(p["cash"], 2),
             round(p["qr"], 2),
             round(p["online"], 2),
+            round(p["discount"], 2),
             round(p["total"], 2),
             medal
         ])
 
-
         r = ws.max_row
         fill = PatternFill("solid", fgColor=get_hour_color(idx))
 
-        for c in range(1, 8):
+        for c in range(1, 9):
             cell = ws.cell(row=r, column=c)
             cell.fill = fill
             cell.border = thin
@@ -617,8 +621,6 @@ async def main():
 
         rank += 1
 
-
-    
 
     buffer = BytesIO()
     wb.save(buffer)
