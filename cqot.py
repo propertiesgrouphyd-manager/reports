@@ -351,6 +351,34 @@ async def run_property_limited(P, TF, TT, HF, HT):
         return await run_property_with_retry(P, TF, TT, HF, HT)
 
 
+
+# ================= AUTOFIT =================
+
+def autofit_columns(ws):
+
+    for column_cells in ws.columns:
+
+        max_length = 0
+        col_letter = column_cells[0].column_letter
+
+        for cell in column_cells:
+            try:
+                if cell.value:
+                    max_length = max(max_length, len(str(cell.value)))
+            except:
+                pass
+
+        adjusted = (max_length * 1.4) + 4
+
+        # Minimum sizes for important columns
+        if col_letter == "A":
+            adjusted = max(adjusted, 16)
+
+        if col_letter == "B":
+            adjusted = max(adjusted, 22)
+
+        ws.column_dimensions[col_letter].width = min(adjusted, 45)
+
 # ================= MAIN =================
 
 async def main():
@@ -487,13 +515,7 @@ async def main():
             cell.font = Font(bold=True, color="FFFFFF")
             cell.alignment = Alignment(horizontal="center")
 
-        ws.column_dimensions["A"].width = 15
-        ws.column_dimensions["B"].width = 18
-        ws.column_dimensions["C"].width = 12
-        ws.column_dimensions["D"].width = 12
-        ws.column_dimensions["E"].width = 12
-        ws.column_dimensions["F"].width = 12
-        ws.column_dimensions["G"].width = 14
+        
 
         chart_titles = ["Cash", "QR", "Online", "Discount", "Total"]
 
@@ -526,7 +548,7 @@ async def main():
 
             chart_row = base_chart_row + (i * chart_gap)
             ws.add_chart(chart, f"A{chart_row}")
-
+        autofit_columns(ws)
 
     for name, hourly_cash in valid_results:
 
@@ -620,7 +642,7 @@ async def main():
             cell.alignment = Alignment(horizontal="center")
 
         rank += 1
-
+    autofit_columns(ws)
 
     buffer = BytesIO()
     wb.save(buffer)
