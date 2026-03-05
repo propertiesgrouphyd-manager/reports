@@ -11,6 +11,8 @@ from datetime import datetime, timedelta
 import traceback
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+from openpyxl.chart import BarChart, Reference
+from openpyxl.chart.series import DataPoint
 from io import BytesIO
 import pytz
 
@@ -326,9 +328,41 @@ async def process_property(P, TF, TT, HF, HT):
         return (P["name"], date_map)
 
 
+# ================= RETRY =================
+
+async def run_property_with_retry(P, TF, TT, HF, HT, retries=5):
+
+    last_error = None
+
+    for attempt in range(1, retries + 1):
+
+        try:
+            return await process_property(P, TF, TT, HF, HT)
+
+        except Exception as e:
+
+            last_error = e
+
+            print(f"RETRY {attempt}/{retries} → {P['name']} :: {e}")
+
+            await asyncio.sleep(2 + attempt * 2)
+
+    raise RuntimeError(f"PROPERTY FAILED → {P['name']}") from last_error
+
+
+async def run_property_limited(P, TF, TT, HF, HT):
+
+    async with prop_semaphore:
+        return await run_property_with_retry(P, TF, TT, HF, HT)
+
+
 # ================= MAIN =================
 
 async def main():
+
+    print("========================================")
+    print(" DATE-WISE CASH COLLECTION REPORT")
+    print("========================================")
 
     global now
     now = datetime.now(IST)
@@ -340,6 +374,8 @@ async def main():
 
     HF = (target_date - timedelta(days=120)).strftime("%Y-%m-%d")
     HT = TT
+
+    display_month = datetime.strptime(TT, "%Y-%m-%d").strftime("%B %Y")
 
     pending = {k: v for k, v in PROPERTIES.items()}
     success_results = {}
@@ -374,11 +410,23 @@ async def main():
 
             await asyncio.sleep(FULL_RUN_RETRY_DELAY)
 
+    # ================= FINAL VERIFICATION =================
+
     valid_results = [
         success_results[k]
         for k in PROPERTIES.keys()
         if k in success_results
     ]
+
+    if len(valid_results) != len(PROPERTIES):
+
+        missing = [
+            PROPERTIES[k]["name"]
+            for k in PROPERTIES.keys()
+            if k not in success_results
+        ]
+
+        raise RuntimeError(f"DATA INCOMPLETE: Missing properties: {missing}")
 
     wb = Workbook()
     wb.remove(wb.active)
@@ -391,6 +439,8 @@ async def main():
     while d <= end_dt:
         date_list.append(d)
         d += timedelta(days=1)
+
+    consolidated = {d: {"cash": 0.0} for d in date_list}
 
     thin = Border(
         left=Side(style="thin", color="DDDDDD"),
@@ -443,11 +493,103 @@ async def main():
         ws.column_dimensions["A"].width = 15
         ws.column_dimensions["B"].width = 18
 
+        chart = BarChart()
+        chart.title = "Cash Trend"
+        chart.height = 12
+        chart.width = 26
+        chart.legend = None
+
+        data = Reference(ws, min_col=2, min_row=1, max_row=len(date_list)+1)
+        cats = Reference(ws, min_col=1, min_row=2, max_row=len(date_list)+1)
+
+        chart.add_data(data, titles_from_data=True)
+        chart.set_categories(cats)
+
+        series = chart.series[0]
+        points = []
+
+        for idx in range(len(date_list)):
+            dp = DataPoint(idx=idx)
+            dp.graphicalProperties.solidFill = get_hour_color(idx, len(date_list))
+            points.append(dp)
+
+        series.dPt = points
+
+        ws.add_chart(chart, f"A{ws.max_row + 3}")
+
 
     for name, date_map in valid_results:
 
         ws = wb.create_sheet(name[:31])
         create_sheet(ws, date_map)
+
+        for d in date_list:
+            consolidated[d]["cash"] += date_map[d]["cash"]
+
+    ws = wb.create_sheet("CONSOLIDATED")
+    create_sheet(ws, consolidated)
+
+    ranking_data = []
+
+    for name, date_map in valid_results:
+        total_cash = sum(v["cash"] for v in date_map.values())
+
+        ranking_data.append({
+            "name": name,
+            "cash": total_cash
+        })
+
+    ranking_data.sort(key=lambda x: x["cash"], reverse=True)
+
+    ws = wb.create_sheet("PROPERTY RANKING")
+
+    headers = ["Rank", "Property", "Cash", "Badge"]
+    ws.append(headers)
+
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+
+    for col in range(1, 5):
+        c = ws.cell(row=1, column=col)
+        c.fill = header_fill
+        c.font = Font(bold=True, color="FFFFFF")
+        c.alignment = Alignment(horizontal="center")
+
+    widths = [10, 28, 16, 18]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[chr(64+i)].width = w
+
+    def get_medal(rank):
+        if rank == 1:
+            return "🥇 Gold"
+        if rank == 2:
+            return "🥈 Silver"
+        if rank == 3:
+            return "🥉 Bronze"
+        return ""
+
+    rank = 1
+
+    for idx, p in enumerate(ranking_data):
+
+        medal = get_medal(rank)
+
+        ws.append([
+            rank,
+            p["name"],
+            round(p["cash"], 2),
+            medal
+        ])
+
+        r = ws.max_row
+        fill = PatternFill("solid", fgColor=get_hour_color(idx, len(date_list)))
+
+        for c in range(1, 5):
+            cell = ws.cell(row=r, column=c)
+            cell.fill = fill
+            cell.border = thin
+            cell.alignment = Alignment(horizontal="center")
+
+        rank += 1
 
     buffer = BytesIO()
     wb.save(buffer)
@@ -459,30 +601,10 @@ async def main():
         caption="📊 Date-wise Cash Collection Report"
     )
 
+    print("✅ EXCEL SENT SUCCESSFULLY")
+
 
 # ================= RUN =================
-
-async def run_property_with_retry(P, TF, TT, HF, HT, retries=5):
-
-    for attempt in range(1, retries + 1):
-
-        try:
-            return await process_property(P, TF, TT, HF, HT)
-
-        except Exception as e:
-
-            print(f"RETRY {attempt}/{retries} → {P['name']} :: {e}")
-
-            await asyncio.sleep(2 + attempt * 2)
-
-    raise RuntimeError(f"PROPERTY FAILED → {P['name']}")
-
-
-async def run_property_limited(P, TF, TT, HF, HT):
-
-    async with prop_semaphore:
-        return await run_property_with_retry(P, TF, TT, HF, HT)
-
 
 if __name__ == "__main__":
 
