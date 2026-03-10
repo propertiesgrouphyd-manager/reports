@@ -722,21 +722,23 @@ async def main():
 
     # ================= PREVIOUS MONTH (BASED ON TARGET_DATE) =================
  
-    TF = target_date.strftime("%Y-%m-%d")
+    TF = (target_date - timedelta(days=1)).strftime("%Y-%m-%d")
     TT = TF
 
-    HF = (target_date - timedelta(days=30)).strftime("%Y-%m-%d")
+    HF = (target_date - timedelta(days=120)).strftime("%Y-%m-%d")
     HT = now.date().strftime("%Y-%m-%d")
 
     target_days = 1  # 🔒 DAILY MODE (BASE EXPECTS THIS)
 
-    TF_FMT = target_date.strftime("%d-%m-%Y")
+    TF_FMT = datetime.strptime(TF, "%Y-%m-%d").strftime("%d-%m-%Y")
+    TT_FMT = datetime.strptime(TT, "%Y-%m-%d").strftime("%d-%m-%Y")
+    HF_FMT = datetime.strptime(HF, "%Y-%m-%d").strftime("%d-%m-%Y")
+    HT_FMT = datetime.strptime(HT, "%Y-%m-%d").strftime("%d-%m-%Y")
 
     print("AUTO BUSINESS DATE MODE")
     print("TARGET DATE :", TF)
     print("HISTORY     :", HF, "→", HT)
 
-    # ================= MONTH LABEL (PREVIOUS MONTH) =================
 
 
    
