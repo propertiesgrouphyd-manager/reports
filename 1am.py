@@ -32,6 +32,7 @@ DETAIL_TIMEOUT = 25
 ROOMS_TIMEOUT = 25
 BATCH_TIMEOUT = 35
 
+
 # ================= TELEGRAM =================
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -245,6 +246,7 @@ def add_property_details_box(ws, prop):
     _border_range(top, start_col, top + 4, end_col)
 
 # ================= PREMIUM PAYMENT TABLES =================
+# ================= PREMIUM PAYMENT TABLES =================
 def add_payment_tables(ws, df, daily_collect, TF, TT, title_prefix=""):
     blue = PatternFill("solid", fgColor="1F4E78")
     light = PatternFill("solid", fgColor="DDEBF7")
@@ -293,12 +295,12 @@ def add_payment_tables(ws, df, daily_collect, TF, TT, title_prefix=""):
 
     ws.append([])
 
-    # ================= TABLE 1: Booking Source vs Payment Mode =================
+    # ================= TABLE 1 =================
     top = ws.max_row + 1
     heading = f"{title_prefix}BOOKING SOURCE × PAYMENT MODE".strip()
     _merge(top, start_col, end_col, heading, fill=blue, font=bold_white, center=True)
 
-    headers = ["Source", "Cash", "QR", "Online", "Total Paid", "", ""]
+    headers = ["Source", "Cash", "QR", "Online", "Discount", "Total Paid", ""]
     for idx, h in enumerate(headers, start=1):
         ws.cell(row=top + 1, column=idx).value = h
     _style_row(top + 1, start_col, end_col, fill=light, font=bold_black)
@@ -312,13 +314,16 @@ def add_payment_tables(ws, df, daily_collect, TF, TT, title_prefix=""):
         cash = round(float(part["Cash"].sum()), 2) if (not part.empty and "Cash" in part.columns) else 0
         qr = round(float(part["QR"].sum()), 2) if (not part.empty and "QR" in part.columns) else 0
         online = round(float(part["Online"].sum()), 2) if (not part.empty and "Online" in part.columns) else 0
-        total_paid = round(cash + qr + online, 2)
+        discount = round(float(part["Discount"].sum()), 2) if (not part.empty and "Discount" in part.columns) else 0
+
+        total_paid = round(cash + qr + online + discount, 2)
 
         ws.cell(row=r, column=1).value = src
         ws.cell(row=r, column=2).value = cash
         ws.cell(row=r, column=3).value = qr
         ws.cell(row=r, column=4).value = online
-        ws.cell(row=r, column=5).value = total_paid
+        ws.cell(row=r, column=5).value = discount
+        ws.cell(row=r, column=6).value = total_paid
 
         for c in range(start_col, end_col + 1):
             cell = ws.cell(row=r, column=c)
@@ -335,13 +340,15 @@ def add_payment_tables(ws, df, daily_collect, TF, TT, title_prefix=""):
     tot_cash = round(float(df["Cash"].sum()), 2) if not df.empty else 0
     tot_qr = round(float(df["QR"].sum()), 2) if not df.empty else 0
     tot_online = round(float(df["Online"].sum()), 2) if not df.empty else 0
-    tot_paid = round(tot_cash + tot_qr + tot_online, 2)
+    tot_discount = round(float(df["Discount"].sum()), 2) if not df.empty else 0
+    tot_paid = round(tot_cash + tot_qr + tot_online + tot_discount, 2)
 
     ws.cell(row=r, column=1).value = "TOTAL"
     ws.cell(row=r, column=2).value = tot_cash
     ws.cell(row=r, column=3).value = tot_qr
     ws.cell(row=r, column=4).value = tot_online
-    ws.cell(row=r, column=5).value = tot_paid
+    ws.cell(row=r, column=5).value = tot_discount
+    ws.cell(row=r, column=6).value = tot_paid
 
     for c in range(start_col, end_col + 1):
         cell = ws.cell(row=r, column=c)
@@ -355,12 +362,12 @@ def add_payment_tables(ws, df, daily_collect, TF, TT, title_prefix=""):
 
     ws.append([])
 
-    # ================= TABLE 2: DATE WISE COLLECTION SUMMARY =================
+    # ================= TABLE 2 =================
     top2 = ws.max_row + 1
     heading2 = f"{title_prefix}DATE WISE COLLECTION SUMMARY".strip()
     _merge(top2, start_col, end_col, heading2, fill=blue, font=bold_white, center=True)
 
-    headers2 = ["Date", "Cash", "QR", "Online", "Total Paid", "", ""]
+    headers2 = ["Date", "Cash", "QR", "Online", "Discount", "Total Paid", ""]
     for idx, h in enumerate(headers2, start=1):
         ws.cell(row=top2 + 1, column=idx).value = h
     _style_row(top2 + 1, start_col, end_col, fill=light, font=bold_black)
@@ -369,23 +376,31 @@ def add_payment_tables(ws, df, daily_collect, TF, TT, title_prefix=""):
     tf_dt = datetime.strptime(TF, "%Y-%m-%d").date()
     tt_dt = datetime.strptime(TT, "%Y-%m-%d").date()
 
-    grand_cash = grand_qr = grand_online = 0.0
+    grand_cash = grand_qr = grand_online = grand_discount = 0.0
 
     cur = tf_dt
     while cur <= tt_dt:
         dkey = cur.strftime("%Y-%m-%d")
-        vals = daily_collect.get(dkey, {"cash": 0.0, "qr": 0.0, "online": 0.0})
+        vals = daily_collect.get(dkey, {
+            "cash": 0.0,
+            "qr": 0.0,
+            "online": 0.0,
+            "discount": 0.0
+        })
 
         cash = round(float(vals.get("cash", 0)), 2)
         qr = round(float(vals.get("qr", 0)), 2)
         online = round(float(vals.get("online", 0)), 2)
-        total_paid = round(cash + qr + online, 2)
+        discount = round(float(vals.get("discount", 0)), 2)
 
-        ws.cell(row=rr, column=1).value = f"{dkey}"
+        total_paid = round(cash + qr + online + discount, 2)
+
+        ws.cell(row=rr, column=1).value = dkey
         ws.cell(row=rr, column=2).value = cash
         ws.cell(row=rr, column=3).value = qr
         ws.cell(row=rr, column=4).value = online
-        ws.cell(row=rr, column=5).value = total_paid
+        ws.cell(row=rr, column=5).value = discount
+        ws.cell(row=rr, column=6).value = total_paid
 
         for c in range(start_col, end_col + 1):
             cell = ws.cell(row=rr, column=c)
@@ -400,17 +415,19 @@ def add_payment_tables(ws, df, daily_collect, TF, TT, title_prefix=""):
         grand_cash += cash
         grand_qr += qr
         grand_online += online
+        grand_discount += discount
 
         rr += 1
         cur += timedelta(days=1)
 
-    grand_total = round(grand_cash + grand_qr + grand_online, 2)
+    grand_total = round(grand_cash + grand_qr + grand_online + grand_discount, 2)
 
     ws.cell(row=rr, column=1).value = "TOTAL"
     ws.cell(row=rr, column=2).value = round(grand_cash, 2)
     ws.cell(row=rr, column=3).value = round(grand_qr, 2)
     ws.cell(row=rr, column=4).value = round(grand_online, 2)
-    ws.cell(row=rr, column=5).value = grand_total
+    ws.cell(row=rr, column=5).value = round(grand_discount, 2)
+    ws.cell(row=rr, column=6).value = grand_total
 
     for c in range(start_col, end_col + 1):
         cell = ws.cell(row=rr, column=c)
@@ -423,7 +440,7 @@ def add_payment_tables(ws, df, daily_collect, TF, TT, title_prefix=""):
     ws.cell(row=rr, column=1).font = bold_black
 
     ws.append([])
-
+# ================= FETCH DETAILS =================
 # ================= FETCH DETAILS =================
 async def fetch_booking_details(session, P, booking_no):
     url = "https://www.oyoos.com/hms_ms/api/v1/visibility/booking_details_with_entities"
@@ -444,35 +461,63 @@ async def fetch_booking_details(session, P, booking_no):
 
     for attempt in range(1, 4):
         try:
-            async with session.get(url, params=params, headers=headers, cookies=cookies, timeout=DETAIL_TIMEOUT) as r:
+            async with session.get(
+                url,
+                params=params,
+                headers=headers,
+                cookies=cookies,
+                timeout=DETAIL_TIMEOUT
+            ) as r:
                 if r.status != 200:
                     raise RuntimeError("DETAIL API FAILED")
 
                 data = await r.json()
-                booking = next(iter(data.get("entities", {}).get("bookings", {}).values()), {})
+                booking = next(
+                    iter(data.get("entities", {}).get("bookings", {}).values()),
+                    {}
+                )
                 payments = booking.get("payments", [])
 
-                payment_events = []  # [{"date":"YYYY-MM-DD","mode":"cash/qr/online","amt":x}]
+                payment_events = []
 
                 for p in payments:
                     mode = p.get("mode", "")
                     amt = float(p.get("amount", 0) or 0)
 
-                    created_at = str(p.get("created_at") or "").strip()
-                    pay_date = created_at.split("T")[0].strip() if created_at else ""
-
-                    if mode == "oyo_wizard_discount":
+                    # 🔥 SKIP ZERO AMOUNT ENTRIES
+                    if amt <= 0:
                         continue
 
+
+                    created_at = str(p.get("created_at") or "").strip()
+                    if not created_at:
+                        continue
+
+                    try:
+                        dt = datetime.fromisoformat(created_at.replace("Z", ""))
+                        dt = dt.astimezone(IST)
+                    except Exception:
+                        continue
+
+                    pay_date = dt.strftime("%Y-%m-%d")
+                    pay_time = dt.strftime("%H:%M")
+
+                    # ================= CLASSIFICATION =================
                     if mode == "Cash at Hotel":
-                        if pay_date:
-                            payment_events.append({"date": pay_date, "mode": "cash", "amt": amt})
+                        bucket = "cash"
                     elif mode == "UPI QR":
-                        if pay_date:
-                            payment_events.append({"date": pay_date, "mode": "qr", "amt": amt})
+                        bucket = "qr"
+                    elif mode == "oyo_wizard_discount":
+                        bucket = "discount"
                     else:
-                        if pay_date:
-                            payment_events.append({"date": pay_date, "mode": "online", "amt": amt})
+                        bucket = "online"
+
+                    payment_events.append({
+                        "date": pay_date,
+                        "time": pay_time,
+                        "mode": bucket,
+                        "amt": amt
+                    })
 
                 return payment_events
 
@@ -480,6 +525,7 @@ async def fetch_booking_details(session, P, booking_no):
             await asyncio.sleep(2 + attempt)
 
     raise RuntimeError("DETAIL FETCH FAILED")
+
 
 # ================= BATCH FETCH =================
 async def fetch_bookings_batch(session, offset, f, t, P):
@@ -558,6 +604,7 @@ async def fetch_total_rooms(session, P):
     return 0
 
 # ================= PROCESS PROPERTY =================
+# ================= PROCESS PROPERTY =================
 async def process_property(P, TF, TT, HF, HT):
     print(f"PROCESSING → {P['name']}")
 
@@ -580,7 +627,7 @@ async def process_property(P, TF, TT, HF, HT):
                 return res
 
         daily_collect = {}
-        booking_date_mode_map = {}  # (date, booking_no) -> {"cash":x,"qr":x,"online":x}
+        booking_date_mode_map = {}
 
         offset = 0
         while True:
@@ -631,13 +678,30 @@ async def process_property(P, TF, TT, HF, HT):
                         continue
 
                     if d not in daily_collect:
-                        daily_collect[d] = {"cash": 0.0, "qr": 0.0, "online": 0.0}
+                        daily_collect[d] = {
+                            "cash": 0.0,
+                            "qr": 0.0,
+                            "online": 0.0,
+                            "discount": 0.0
+                        }
 
                     if (d, booking_no) not in booking_date_mode_map:
-                        booking_date_mode_map[(d, booking_no)] = {"cash": 0.0, "qr": 0.0, "online": 0.0, "b": b, "source": source}
+                        booking_date_mode_map[(d, booking_no)] = {
+                            "cash": 0.0,
+                            "qr": 0.0,
+                            "online": 0.0,
+                            "discount": 0.0,
+                            "times": set(),
+                            "b": b,
+                            "source": source
+                        }
 
                     mode = ev.get("mode")
                     amt = float(ev.get("amt", 0) or 0)
+                    ptime = ev.get("time")
+
+                    if ptime:
+                        booking_date_mode_map[(d, booking_no)]["times"].add(ptime)
 
                     if mode == "cash":
                         daily_collect[d]["cash"] += amt
@@ -645,22 +709,30 @@ async def process_property(P, TF, TT, HF, HT):
                     elif mode == "qr":
                         daily_collect[d]["qr"] += amt
                         booking_date_mode_map[(d, booking_no)]["qr"] += amt
+                    elif mode == "discount":
+                        daily_collect[d]["discount"] += amt
+                        booking_date_mode_map[(d, booking_no)]["discount"] += amt
                     else:
                         daily_collect[d]["online"] += amt
                         booking_date_mode_map[(d, booking_no)]["online"] += amt
 
-            if len(data["bookingIds"]) < 100:
+            if len(data.get("bookingIds", [])) < 100:
                 break
             offset += 100
 
-        # Build DF rows
+        # ================= BUILD DATAFRAME =================
         all_rows = []
+
         for (d, booking_no), vals in booking_date_mode_map.items():
             b = vals["b"]
+
             cash = vals["cash"]
             qr = vals["qr"]
             online = vals["online"]
-            total_paid = cash + qr + online
+            discount = vals["discount"]
+
+            total_paid = cash + qr + online + discount
+            times_str = ", ".join(sorted(vals["times"]))
 
             all_rows.append({
                 "Date": d,
@@ -673,20 +745,25 @@ async def process_property(P, TF, TT, HF, HT):
                 "Cash": round(cash, 2),
                 "QR": round(qr, 2),
                 "Online": round(online, 2),
+                "Discount": round(discount, 2),
                 "Total Paid": round(total_paid, 2),
+                "Time": times_str
             })
 
         df = pd.DataFrame(all_rows)
 
         if df.empty:
             df = pd.DataFrame(columns=[
-                "Date", "Booking Id", "Guest Name", "Status", "Booking Source",
-                "Check In", "Check Out", "Cash", "QR", "Online", "Total Paid"
+                "Date", "Booking Id", "Guest Name", "Status",
+                "Booking Source", "Check In", "Check Out",
+                "Cash", "QR", "Online", "Discount",
+                "Total Paid", "Time"
             ])
 
         df = df.sort_values(["Date", "Booking Id"], ascending=True)
 
         return (P["name"], df, total_rooms, prop_details, daily_collect)
+
 
 # ================= RETRY =================
 async def run_property_with_retry(P, TF, TT, HF, HT, retries=3):
@@ -704,6 +781,7 @@ async def run_property_limited(P, TF, TT, HF, HT):
     async with prop_semaphore:
         return await run_property_with_retry(P, TF, TT, HF, HT)
 
+# ================= MAIN =================
 # ================= MAIN =================
 async def main():
     print("========================================")
@@ -739,18 +817,11 @@ async def main():
     print("TARGET DATE :", TF)
     print("HISTORY     :", HF, "→", HT)
 
-
-
-   
-
-
     tf_date = datetime.strptime(TF, "%Y-%m-%d")
     tt_date = datetime.strptime(TT, "%Y-%m-%d")
 
     if tt_date < tf_date:
         raise ValueError("TARGET TO date cannot be before TARGET FROM date")
-
-    target_days = (tt_date - tf_date).days + 1  # always 1 day now
 
     pending = {k: v for k, v in PROPERTIES.items()}
     success_results = {}
@@ -776,10 +847,13 @@ async def main():
 
         if pending:
             if run_attempt == MAX_FULL_RUN_RETRIES:
-                raise RuntimeError(f"FINAL FAILURE: Properties failed after retries: {[p['name'] for p in pending.values()]}")
+                raise RuntimeError(
+                    f"FINAL FAILURE: Properties failed after retries: {[p['name'] for p in pending.values()]}"
+                )
             await asyncio.sleep(FULL_RUN_RETRY_DELAY)
 
     valid_results = [success_results[k] for k in PROPERTIES.keys() if k in success_results]
+
     if len(valid_results) != len(PROPERTIES):
         missing = [PROPERTIES[k]["name"] for k in PROPERTIES.keys() if k not in success_results]
         raise RuntimeError(f"DATA INCOMPLETE: Missing properties: {missing}")
@@ -794,13 +868,20 @@ async def main():
     for name, df, total_rooms, prop_details, daily_collect in valid_results:
         all_dfs.append(df)
 
-        # consolidate daily collection
+        # consolidate daily collection (INCLUDING DISCOUNT)
         for dkey, vals in (daily_collect or {}).items():
             if dkey not in consolidated_daily_collect:
-                consolidated_daily_collect[dkey] = {"cash": 0.0, "qr": 0.0, "online": 0.0}
+                consolidated_daily_collect[dkey] = {
+                    "cash": 0.0,
+                    "qr": 0.0,
+                    "online": 0.0,
+                    "discount": 0.0
+                }
+
             consolidated_daily_collect[dkey]["cash"] += float(vals.get("cash", 0) or 0)
             consolidated_daily_collect[dkey]["qr"] += float(vals.get("qr", 0) or 0)
             consolidated_daily_collect[dkey]["online"] += float(vals.get("online", 0) or 0)
+            consolidated_daily_collect[dkey]["discount"] += float(vals.get("discount", 0) or 0)
 
         ws = wb.create_sheet(name)
 
@@ -809,7 +890,6 @@ async def main():
 
         beautify(ws)
 
-        # ✅ ONLY 3 bottom tables
         ws.append([])
         ws.append([])
         add_payment_tables(ws, df, daily_collect, TF, TT)
@@ -818,12 +898,12 @@ async def main():
     # ================= CONSOLIDATED SHEET =================
     big = pd.concat(all_dfs) if all_dfs else pd.DataFrame(columns=[
         "Date", "Booking Id", "Guest Name", "Status", "Booking Source",
-        "Check In", "Check Out", "Cash", "QR", "Online", "Total Paid"
+        "Check In", "Check Out",
+        "Cash", "QR", "Online", "Discount", "Total Paid", "Time"
     ])
 
     ws = wb.create_sheet("CONSOLIDATED STATISTICS")
 
-    # ✅ ONLY 2 tables in consolidated
     add_payment_tables(ws, big, consolidated_daily_collect, TF, TT, title_prefix="CONSOLIDATED — ")
     beautify(ws)
 
@@ -840,6 +920,7 @@ async def main():
 
     print("✅ EXCEL SENT TO TELEGRAM")
     return
+
 
 # ================= RUN =================
 if __name__ == "__main__":
