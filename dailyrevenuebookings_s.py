@@ -668,7 +668,7 @@ async def capture_booking_screenshot(context, booking_id):
 
         await page.screenshot(
             path=path,
-            full_page=True
+            full_page=False
         )
 
         return path
@@ -1076,12 +1076,19 @@ async def main():
 
                 if img_path and os.path.exists(img_path):
 
-                    link_col = len(row)
-                    cell = ws.cell(row=r_idx, column=link_col)
+                    img = XLImage(img_path)
 
-                    cell.value = "Open Screenshot"
-                    cell.hyperlink = img_path
-                    cell.style = "Hyperlink"
+                    img.width = 180
+                    img.height = 320
+
+                    img_col = len(row)
+
+                    cell_address = f"{get_column_letter(img_col)}{r_idx}"
+
+                    ws.add_image(img, cell_address)
+
+                    ws.row_dimensions[r_idx].height = 240
+                    ws.column_dimensions[get_column_letter(img_col)].width = 35
 
         beautify(ws)
 
