@@ -658,10 +658,8 @@ async def capture_booking_screenshot(context, booking_id):
 
         path = f"{SCREENSHOT_DIR}/booking_{booking_id}.png"
 
-        await page.screenshot(
-            path=path,
-            full_page=False
-        )
+        card = page.locator("body")
+        await card.screenshot(path=path)
 
         return path
 
@@ -1067,15 +1065,19 @@ async def main():
 
                 if img_path and os.path.exists(img_path):
 
-                    filename = os.path.basename(img_path)
+                    img = XLImage(img_path)
 
-                    col_index = len(row)
+                    img.width = 120
+                    img.height = 200
 
-                    cell = ws.cell(row=r_idx, column=col_index)
+                    img_col_index = len(row)
 
-                    cell.value = filename
-                    cell.hyperlink = img_path
-                    cell.style = "Hyperlink"
+                    cell = f"{get_column_letter(img_col_index)}{r_idx}"
+
+                    ws.add_image(img, cell)
+
+                    ws.row_dimensions[r_idx].height = 150
+                    ws.column_dimensions[get_column_letter(img_col_index)].width = 22
 
         beautify(ws)
 
