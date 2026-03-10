@@ -648,15 +648,7 @@ async def capture_booking_screenshot(context, booking_id):
     try:
         page = await context.new_page()
 
-        # open bookings dashboard first
-        await page.goto(
-            "https://www.oyoos.com/hms/bookings",
-            wait_until="networkidle",
-            timeout=60000
-        )
-
-        # then open booking page
-        booking_url = f"https://www.oyoos.com/hms/bookings/{booking_id}"
+        booking_url = f"https://www.oyoos.com/hms/#/bookings/{booking_id}"
 
         await page.goto(
             booking_url,
@@ -680,7 +672,6 @@ async def capture_booking_screenshot(context, booking_id):
     finally:
         if page:
             await page.close()
-
 
 
 
@@ -1076,19 +1067,15 @@ async def main():
 
                 if img_path and os.path.exists(img_path):
 
-                    img = XLImage(img_path)
+                    filename = os.path.basename(img_path)
 
-                    img.width = 180
-                    img.height = 320
+                    col_index = len(row)
 
-                    img_col = len(row)
+                    cell = ws.cell(row=r_idx, column=col_index)
 
-                    cell_address = f"{get_column_letter(img_col)}{r_idx}"
-
-                    ws.add_image(img, cell_address)
-
-                    ws.row_dimensions[r_idx].height = 240
-                    ws.column_dimensions[get_column_letter(img_col)].width = 35
+                    cell.value = filename
+                    cell.hyperlink = img_path
+                    cell.style = "Hyperlink"
 
         beautify(ws)
 
