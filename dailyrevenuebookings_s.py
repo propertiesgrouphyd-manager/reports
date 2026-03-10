@@ -4,35 +4,6 @@
 # BEAUTIFUL PREMIUM EXCEL
 # ==============================
 
-# ================= AUTO INSTALL DEPENDENCIES =================
-import subprocess
-import sys
-
-def install(package):
-    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-
-required = {
-    "playwright": "playwright",
-    "pillow": "PIL",
-    "aiohttp": "aiohttp",
-    "pandas": "pandas",
-    "openpyxl": "openpyxl",
-    "pytz": "pytz"
-}
-
-for pip_name, module_name in required.items():
-    try:
-        __import__(module_name)
-    except ImportError:
-        install(pip_name)
-
-
-
-# install browser
-subprocess.run(["playwright", "install", "chromium"], check=False)
-
-
-
 import os
 import json
 import asyncio
@@ -970,7 +941,6 @@ async def send_telegram_excel_buffer(buffer, filename, caption=None):
                 raise RuntimeError(f"Telegram send failed: {text}")
 
 # ================= MAIN =================
-# ================= MAIN (MONTH MODE — BASE STRENGTH GUARANTEE) =================
 async def main():
 
     playwright = await async_playwright().start()
@@ -980,11 +950,12 @@ async def main():
     )
 
     # cleanup old screenshots
-    for f in os.listdir(SCREENSHOT_DIR):
-        try:
-            os.remove(os.path.join(SCREENSHOT_DIR, f))
-        except:
-            pass
+    if os.path.exists(SCREENSHOT_DIR):
+        for f in os.listdir(SCREENSHOT_DIR):
+            try:
+                os.remove(os.path.join(SCREENSHOT_DIR, f))
+            except:
+                pass
 
     print("========================================")
     print(" OYO DAILY TELEGRAM AUTOMATION")
@@ -993,22 +964,20 @@ async def main():
     global now
     now = datetime.now(IST)
 
-
     # ================= BUSINESS DATE CUTOVER (12 PM RULE) =================
     if now.hour < 12:
         target_date = (now - timedelta(days=1)).date()
     else:
         target_date = now.date()
 
-    # ================= PREVIOUS MONTH (BASED ON TARGET_DATE) =================
- 
+    # ================= DATE RANGE =================
     TF = (target_date - timedelta(days=1)).strftime("%Y-%m-%d")
     TT = TF
 
     HF = (target_date - timedelta(days=120)).strftime("%Y-%m-%d")
     HT = now.date().strftime("%Y-%m-%d")
 
-    target_days = 1  # 🔒 DAILY MODE (BASE EXPECTS THIS)
+    target_days = 1
 
     TF_FMT = datetime.strptime(TF, "%Y-%m-%d").strftime("%d-%m-%Y")
     TT_FMT = datetime.strptime(TT, "%Y-%m-%d").strftime("%d-%m-%Y")
@@ -1019,14 +988,12 @@ async def main():
     print("TARGET DATE :", TF)
     print("HISTORY     :", HF, "→", HT)
 
-
-
-
-    # ================= SMART RETRY (ONLY FAILED PROPERTIES) =================
+    # ================= SMART RETRY =================
     pending = {k: v for k, v in PROPERTIES.items()}
     success_results = {}
 
     for run_attempt in range(1, MAX_FULL_RUN_RETRIES + 1):
+
         if not pending:
             break
 
@@ -1037,6 +1004,7 @@ async def main():
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         new_pending = {}
+
         for key, (P, result) in zip(list(pending.keys()), zip(pending.values(), results)):
 
             if isinstance(result, Exception):
@@ -1046,7 +1014,6 @@ async def main():
 
             name, df, *_ = result
 
-            # strict verify (df always exists now; empty allowed as valid)
             if df is None:
                 print(f"❌ EMPTY DATA → {name}")
                 new_pending[key] = P
@@ -1058,6 +1025,7 @@ async def main():
         pending = new_pending
 
         if pending:
+
             if run_attempt == MAX_FULL_RUN_RETRIES:
                 failed_names = [p["name"] for p in pending.values()]
                 raise RuntimeError(f"FINAL FAILURE: Properties failed after retries: {failed_names}")
@@ -1072,415 +1040,208 @@ async def main():
         missing = [PROPERTIES[k]["name"] for k in PROPERTIES.keys() if k not in success_results]
         raise RuntimeError(f"DATA INCOMPLETE: Missing properties: {missing}")
 
-  
-
     print("✅ DATA VERIFIED — ALL PROPERTIES PRESENT")
 
-    if True:
-
-        # ================= PER-PROPERTY MONTHLY REPORTS =================
-        # ================= EXCEL CREATION =================
-        wb = Workbook()
-        wb.remove(wb.active)
-        all_dfs = []
-
-        for name, df, total_rooms, inhouse, checkedout, upcoming, cancelled, prop_details, target_collect in valid_results:
-
-
-                all_dfs.append(df)
-                ws = wb.create_sheet(name)
-
-                for r_idx, row in enumerate(dataframe_to_rows(df, index=False, header=True), start=1):
-
-                    ws.append(row)
-
-                    if r_idx > 1:
-                        img_path = row[-1]
-
-                        if img_path and os.path.exists(img_path):
-
-                            img = XLImage(img_path)
-
-                            img.width = 250
-                            img.height = 450
-
-                            img_col_index = len(row) + 1
-                            cell = f"{get_column_letter(img_col_index)}{r_idx}"
-
-                            ws.add_image(img, cell)
-
-                beautify(ws)
-                # widen screenshot column
-                img_col = get_column_letter(df.shape[1] + 1)
-                ws.column_dimensions[img_col].width = 40
-
-                ws.append([])
-                stats = [
-                    ["Total Bookings", int(df["Rooms"].sum())],
-                    ["Total OYO Bookings", count(df, "OYO")],
-                    ["Walk-in Bookings", count(df, "Walk-in")],
-                    ["MMT Bookings", count(df, "MMT")],
-                    ["BDC Bookings", count(df, "BDC")],
-                    ["Agoda Bookings", count(df, "Agoda")],
-                    ["CB Bookings", count(df, "CB")],
-                    ["TA Bookings", count(df, "TA")],
-                    ["OBA Bookings", count(df, "OBA")],
-                    [],
-                    ["Total Amount", round(df["Amount"].sum(), 2)],
-                    ["Cash Amount", round(df["Cash"].sum(), 2)],
-                    ["QR Amount", round(df["QR"].sum(), 2)],
-                    ["Online Amount", round(df["Online"].sum(), 2)],
-                    ["Discount Amount", round(df["Discount"].sum(), 2)],
-                    ["Ballance Amount", round(df["Balance"].sum(), 2)],
-                    [],
-                    ["OYO Amount", amt(df, "OYO")],
-                    ["Walk-in Amount", amt(df, "Walk-in")],
-                    ["MMT Amount", amt(df, "MMT")],
-                    ["BDC Amount", amt(df, "BDC")],
-                    ["Agoda Amount", amt(df, "Agoda")],
-                    ["CB Amount", amt(df, "CB")],
-                    ["TA Amount", amt(df, "TA")],
-                    ["OBA Amount", amt(df, "OBA")]
-                ]
-
-                for s in stats:
-                    ws.append(s)
-
-                ws.append([])
-
-                total_booked_rooms = int(df["Rooms"].sum())
-                total_amt = float(df["Amount"].sum())
-                arr = round(total_amt / total_booked_rooms, 2) if total_booked_rooms else 0
-
-                oyo_df = df[df["Booking Source"] == "OYO"]
-                oyo_rooms = int(oyo_df["Rooms"].sum())
-                oyo_amount = float(oyo_df["Amount"].sum())
-                app_arr = round(oyo_amount / oyo_rooms, 2) if oyo_rooms else 0
-
-                effective_total_rooms = total_rooms * target_days
-
-                available_rooms = effective_total_rooms - total_booked_rooms
-                occupancy = round((total_booked_rooms / effective_total_rooms) * 100, 2) if effective_total_rooms else 0
-
-        
-
-                ws.append(["Total Rooms", effective_total_rooms])
-                ws.append(["Booked Rooms", total_booked_rooms])
-                ws.append(["Available Rooms", available_rooms])
-                ws.append(["Occupancy", f"{occupancy}%"])
-                ws.append(["ARR", arr])
-                ws.append(["App ARR", app_arr])
-
-                ws.append([])
-                ws.append([])
-                add_payment_tables(ws, df, target_collect)
-                add_property_details_box(ws, prop_details)
-
-            # ================= CONSOLIDATED =================
-            if all_dfs:
-                big = pd.concat(all_dfs, ignore_index=True)
-            else:
-                big = pd.DataFrame(columns=[
-                    "Date","Booking Id","Guest Name","Status","Booking Source",
-                    "Check In","Check Out","Rooms","Room Numbers",
-                    "Amount","Cash","QR","Online","Discount","Balance"
-                ])
-
-            if "Screenshots" in big.columns:
-                big = big.drop(columns=["Screenshots"])
-            ws = wb.create_sheet("CONSOLIDATED STATISTICS")
-                        # ================= NEW: CONSOLIDATED TARGET COLLECTION =================
-            consolidated_target_collect = {"cash": 0.0, "qr": 0.0, "online": 0.0}
-            for res in valid_results:
-                tc = res[-1]  # target_collect
-                consolidated_target_collect["cash"] += float(tc.get("cash", 0))
-                consolidated_target_collect["qr"] += float(tc.get("qr", 0))
-                consolidated_target_collect["online"] += float(tc.get("online", 0))
-
-
-            rows = [
-                ["Total Bookings", int(big["Rooms"].sum())],
-                ["Total OYO Bookings", count(big, "OYO")],
-                ["Walk-in Bookings", count(big, "Walk-in")],
-                ["MMT Bookings", count(big, "MMT")],
-                ["BDC Bookings", count(big, "BDC")],
-                ["Agoda Bookings", count(big, "Agoda")],
-                ["CB Bookings", count(big, "CB")],
-                ["TA Bookings", count(big, "TA")],
-                ["OBA Bookings", count(big, "OBA")],
-                [],
-                ["Total Amount", round(big["Amount"].sum(), 2)],
-                ["Cash Amount", round(big["Cash"].sum(), 2)],
-                ["QR Amount", round(big["QR"].sum(), 2)],
-                ["Online Amount", round(big["Online"].sum(), 2)],
-                ["Discount Amount", round(big["Discount"].sum(), 2)],
-                ["Ballance Amount", round(big["Balance"].sum(), 2)],
-                [],
-                ["OYO Amount", amt(big, "OYO")],
-                ["Walk-in Amount", amt(big, "Walk-in")],
-                ["MMT Amount", amt(big, "MMT")],
-                ["BDC Amount", amt(big, "BDC")],
-                ["Agoda Amount", amt(big, "Agoda")],
-                ["CB Amount", amt(big, "CB")],
-                ["TA Amount", amt(big, "TA")],
-                ["OBA Amount", amt(big, "OBA")]
-            ]
-
-            for r in rows:
-                ws.append(r)
-
-            ws.append([])
-
-            grand_total_rooms = sum(r[2] for r in valid_results) * target_days
-            total_rooms_booked = int(big["Rooms"].sum())
-            total_amt = float(big["Amount"].sum())
-            arr = round(total_amt / total_rooms_booked, 2) if total_rooms_booked else 0
-
-            oyo_big = big[big["Booking Source"] == "OYO"]
-            oyo_rooms = int(oyo_big["Rooms"].sum())
-            oyo_amt = float(oyo_big["Amount"].sum())
-            app_arr = round(oyo_amt / oyo_rooms, 2) if oyo_rooms else 0
-
-            available_rooms = grand_total_rooms - total_rooms_booked
-            occupancy = round((total_rooms_booked / grand_total_rooms) * 100, 2) if grand_total_rooms else 0
-
-            ws.append(["Total Rooms", grand_total_rooms])
-            ws.append(["Booked Rooms", total_rooms_booked])
-            ws.append(["Available Rooms", available_rooms])
-            ws.append(["Occupancy", f"{occupancy}%"])
-            ws.append(["ARR", arr])
-            ws.append(["App ARR", app_arr])
-            
-            blue = PatternFill("solid", fgColor="1F4E78")
-            light = PatternFill("solid", fgColor="DDEBF7")
-            green = PatternFill("solid", fgColor="C6EFCE")
-            yellow = PatternFill("solid", fgColor="FFF4CC")
-            red = PatternFill("solid", fgColor="FFC7CE")
-
-            bold_white = Font(color="FFFFFF", bold=True, size=12)
-            bold_black = Font(color="000000", bold=True, size=11)
-            normal = Font(color="000000", size=11)
-
-            thin = Border(
-                left=Side(style='thin'),
-                right=Side(style='thin'),
-                top=Side(style='thin'),
-                bottom=Side(style='thin')
-            )
-             
-
-                        # ================= PROPERTY WISE AMOUNT TABLE =================
-            ws.append([])
-
-            start_amt_row = ws.max_row + 1
-            ws.merge_cells(start_row=start_amt_row, start_column=1, end_row=start_amt_row, end_column=7)
-            cell = ws.cell(row=start_amt_row, column=1)
-            cell.value = "PROPERTY WISE AMOUNT"
-            cell.fill = blue
-            cell.font = bold_white
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-            cell.border = thin
-
-            amt_headers = ["Property Code", "Cash", "QR", "Online", "Discount", "Balance", "Total Amount"]
-            for i, h in enumerate(amt_headers, 1):
-                ws.cell(row=start_amt_row + 1, column=i).value = h
-                ws.cell(row=start_amt_row + 1, column=i).fill = light
-                ws.cell(row=start_amt_row + 1, column=i).font = bold_black
-                ws.cell(row=start_amt_row + 1, column=i).border = thin
-                ws.cell(row=start_amt_row + 1, column=i).alignment = Alignment(horizontal="center")
-
-            rr = start_amt_row + 2
-
-            tot_cash = tot_qr = tot_online = tot_disc = tot_bal = tot_amt = 0
-
-            for name, df_prop, *_ in valid_results:
-                cash = round(df_prop["Cash"].sum(), 2)
-                qr = round(df_prop["QR"].sum(), 2)
-                online = round(df_prop["Online"].sum(), 2)
-                disc = round(df_prop["Discount"].sum(), 2)
-                bal = round(df_prop["Balance"].sum(), 2)
-                amt_total = round(df_prop["Amount"].sum(), 2)
-
-                tot_cash += cash
-                tot_qr += qr
-                tot_online += online
-                tot_disc += disc
-                tot_bal += bal
-                tot_amt += amt_total
-
-                vals = [name, cash, qr, online, disc, bal, amt_total]
-                for c, v in enumerate(vals, 1):
-                    ws.cell(row=rr, column=c).value = v
-                    ws.cell(row=rr, column=c).border = thin
-                    ws.cell(row=rr, column=c).alignment = Alignment(horizontal="center")
-                rr += 1
-
-            # totals row
-            totals = ["TOTAL", round(tot_cash,2), round(tot_qr,2), round(tot_online,2),
-                      round(tot_disc,2), round(tot_bal,2), round(tot_amt,2)]
-
-            for c, v in enumerate(totals, 1):
-                ws.cell(row=rr, column=c).value = v
-                ws.cell(row=rr, column=c).fill = yellow
-                ws.cell(row=rr, column=c).font = bold_black
-                ws.cell(row=rr, column=c).border = thin
-                ws.cell(row=rr, column=c).alignment = Alignment(horizontal="center")
-
-            # ================= PROPERTY WISE BOOKINGS TABLE =================
-            ws.append([])
-
-            start_book_row = ws.max_row + 1
-            ws.merge_cells(start_row=start_book_row, start_column=1, end_row=start_book_row, end_column=10)
-            cell = ws.cell(row=start_book_row, column=1)
-            cell.value = "PROPERTY WISE BOOKINGS"
-            cell.fill = blue
-            cell.font = bold_white
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-            cell.border = thin
-
-            book_headers = ["Property Code","OYO","Walk-in","MMT","BDC","Agoda","CB","TA","OBA","Total"]
-            for i, h in enumerate(book_headers, 1):
-                ws.cell(row=start_book_row + 1, column=i).value = h
-                ws.cell(row=start_book_row + 1, column=i).fill = light
-                ws.cell(row=start_book_row + 1, column=i).font = bold_black
-                ws.cell(row=start_book_row + 1, column=i).border = thin
-                ws.cell(row=start_book_row + 1, column=i).alignment = Alignment(horizontal="center")
-
-            rr = start_book_row + 2
-
-            col_totals = [0]*8
-
-            for name, df_prop, *_ in valid_results:
-                vals = [
-                    name,
-                    count(df_prop,"OYO"),
-                    count(df_prop,"Walk-in"),
-                    count(df_prop,"MMT"),
-                    count(df_prop,"BDC"),
-                    count(df_prop,"Agoda"),
-                    count(df_prop,"CB"),
-                    count(df_prop,"TA"),
-                    count(df_prop,"OBA")
-                ]
-
-                total_row = sum(vals[1:])
-                vals.append(total_row)
-
-                for i in range(1,9):
-                    col_totals[i-1] += vals[i]
-
-                for c, v in enumerate(vals, 1):
-                    ws.cell(row=rr, column=c).value = v
-                    ws.cell(row=rr, column=c).border = thin
-                    ws.cell(row=rr, column=c).alignment = Alignment(horizontal="center")
-                rr += 1
-
-            total_vals = ["TOTAL"] + col_totals + [sum(col_totals)]
-
-            for c, v in enumerate(total_vals, 1):
-                ws.cell(row=rr, column=c).value = v
-                ws.cell(row=rr, column=c).fill = yellow
-                ws.cell(row=rr, column=c).font = bold_black
-                ws.cell(row=rr, column=c).border = thin
-                ws.cell(row=rr, column=c).alignment = Alignment(horizontal="center")
-          
-
-            # ================= NEW: PROPERTY SCORE TABLE (CONSOLIDATED ONLY) =================
-            ws.append([])  # ✅ 1 row space after App ARR
-
-            
-
-            start_row = ws.max_row + 1
-
-            # Header merged A:C
-            ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=3)
-            hcell = ws.cell(row=start_row, column=1)
-            hcell.value = "PROPERTY SCORE"
-            hcell.fill = blue
-            hcell.font = bold_white
-            hcell.alignment = Alignment(horizontal="center", vertical="center")
-            hcell.border = thin
-            ws.cell(row=start_row, column=2).border = thin
-            ws.cell(row=start_row, column=3).border = thin
-            ws.row_dimensions[start_row].height = 20
-
-            # Column headers
-            headers = ["Property Code", "Revenue", "Score", "Revenue Loss"]
-            for idx, h in enumerate(headers, start=1):
-                ws.cell(row=start_row + 1, column=idx).value = h
-
-            for c in [1, 2, 3, 4]:
-                cell = ws.cell(row=start_row + 1, column=c)
-                cell.fill = light
-                cell.font = bold_black
-                cell.border = thin
-                cell.alignment = Alignment(horizontal="center", vertical="center")
-
-            r = start_row + 2
-
-            # Each property score + revenue loss
-            for name, df_prop, total_rooms_prop, *_ in valid_results:
-                booked_rooms_prop = int(df_prop["Rooms"].sum()) if not df_prop.empty else 0
-                total_rooms_effective = (total_rooms_prop * target_days) if total_rooms_prop else 0
-                available_rooms_prop = total_rooms_effective - booked_rooms_prop
-
-                total_amount_prop = float(df_prop["Amount"].sum()) if not df_prop.empty else 0.0
-
-                score = round((booked_rooms_prop / total_rooms_effective) * 100, 2) if total_rooms_effective else 0.0
-
-                # ✅ Revenue Loss = Total Amount * (Available Rooms / Booked Rooms)
-                if booked_rooms_prop > 0:
-                    revenue_loss = round(total_amount_prop * (available_rooms_prop / booked_rooms_prop), 2)
-                else:
-                    revenue_loss = 0.0
-
-                ws.cell(row=r, column=1).value = name
-                ws.cell(row=r, column=2).value = round(total_amount_prop, 2)   # Revenue
-                ws.cell(row=r, column=3).value = f"{score}%"
-                ws.cell(row=r, column=4).value = revenue_loss
-
-
-                # Conditional fill based on score
-                if score > 80:
-                    row_fill = green
-                elif score >= 60:
-                    row_fill = yellow
-                else:
-                    row_fill = red
-
-                for c in [1, 2, 3, 4]:
-                    cell = ws.cell(row=r, column=c)
-                    cell.fill = row_fill
-                    cell.font = normal
-                    cell.border = thin
-                    cell.alignment = Alignment(horizontal="center", vertical="center")
-
-                r += 1
-
-            ws.append([])  # ✅ 1 row space after table
-
-            
-                        # ================= NEW: CONSOLIDATED PAYMENT TABLES =================
-            add_payment_tables(ws, big, consolidated_target_collect, title_prefix="CONSOLIDATED — ")
-
-
-            beautify(ws)
-
-            # ================= SEND EXCEL TO TELEGRAM (NO LOCAL SAVE) =================
-            buffer = BytesIO()
-            wb.save(buffer)
-            buffer.seek(0)
-
-            await send_telegram_excel_buffer(
-                buffer,
-                filename=f"Bookings_{TF_FMT}.xlsx",
-                caption=f"📊 Daily Bookings Report"
-            )
-
-            await browser.close()
-            await playwright.stop()
-            print("✅ EXCEL SENT TO TELEGRAM (NO LOCAL FILE)")
-            return
+
+
+    # ================= EXCEL CREATION =================
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    all_dfs = []
+
+    for name, df, total_rooms, inhouse, checkedout, upcoming, cancelled, prop_details, target_collect in valid_results:
+
+        all_dfs.append(df)
+        ws = wb.create_sheet(name)
+
+        for r_idx, row in enumerate(dataframe_to_rows(df, index=False, header=True), start=1):
+
+            ws.append(row)
+
+            if r_idx > 1:
+
+                img_path = row[-1]
+
+                if img_path and os.path.exists(img_path):
+
+                    img = XLImage(img_path)
+                    img.width = 250
+                    img.height = 450
+
+                    img_col_index = len(row) + 1
+                    cell = f"{get_column_letter(img_col_index)}{r_idx}"
+
+                    ws.add_image(img, cell)
+
+        beautify(ws)
+
+        img_col = get_column_letter(len(df.columns) + 1)
+        ws.column_dimensions[img_col].width = 40
+
+        ws.append([])
+
+        stats = [
+            ["Total Bookings", int(df["Rooms"].sum())],
+            ["Total OYO Bookings", count(df, "OYO")],
+            ["Walk-in Bookings", count(df, "Walk-in")],
+            ["MMT Bookings", count(df, "MMT")],
+            ["BDC Bookings", count(df, "BDC")],
+            ["Agoda Bookings", count(df, "Agoda")],
+            ["CB Bookings", count(df, "CB")],
+            ["TA Bookings", count(df, "TA")],
+            ["OBA Bookings", count(df, "OBA")],
+            [],
+            ["Total Amount", round(df["Amount"].sum(), 2)],
+            ["Cash Amount", round(df["Cash"].sum(), 2)],
+            ["QR Amount", round(df["QR"].sum(), 2)],
+            ["Online Amount", round(df["Online"].sum(), 2)],
+            ["Discount Amount", round(df["Discount"].sum(), 2)],
+            ["Ballance Amount", round(df["Balance"].sum(), 2)],
+            [],
+            ["OYO Amount", amt(df, "OYO")],
+            ["Walk-in Amount", amt(df, "Walk-in")],
+            ["MMT Amount", amt(df, "MMT")],
+            ["BDC Amount", amt(df, "BDC")],
+            ["Agoda Amount", amt(df, "Agoda")],
+            ["CB Amount", amt(df, "CB")],
+            ["TA Amount", amt(df, "TA")],
+            ["OBA Amount", amt(df, "OBA")]
+        ]
+
+        for s in stats:
+            ws.append(s)
+
+        ws.append([])
+
+        total_booked_rooms = int(df["Rooms"].sum())
+        total_amt = float(df["Amount"].sum())
+
+        arr = round(total_amt / total_booked_rooms, 2) if total_booked_rooms else 0
+
+        oyo_df = df[df["Booking Source"] == "OYO"]
+        oyo_rooms = int(oyo_df["Rooms"].sum())
+        oyo_amount = float(oyo_df["Amount"].sum())
+
+        app_arr = round(oyo_amount / oyo_rooms, 2) if oyo_rooms else 0
+
+        effective_total_rooms = total_rooms * target_days
+        available_rooms = effective_total_rooms - total_booked_rooms
+        occupancy = round((total_booked_rooms / effective_total_rooms) * 100, 2) if effective_total_rooms else 0
+
+        ws.append(["Total Rooms", effective_total_rooms])
+        ws.append(["Booked Rooms", total_booked_rooms])
+        ws.append(["Available Rooms", available_rooms])
+        ws.append(["Occupancy", f"{occupancy}%"])
+        ws.append(["ARR", arr])
+        ws.append(["App ARR", app_arr])
+
+        ws.append([])
+        ws.append([])
+
+        add_payment_tables(ws, df, target_collect)
+        add_property_details_box(ws, prop_details)
+
+    # ================= CONSOLIDATED =================
+
+    if all_dfs:
+        big = pd.concat(all_dfs, ignore_index=True)
+    else:
+        big = pd.DataFrame(columns=[
+            "Date","Booking Id","Guest Name","Status","Booking Source",
+            "Check In","Check Out","Rooms","Room Numbers",
+            "Amount","Cash","QR","Online","Discount","Balance"
+        ])
+
+    if "Screenshots" in big.columns:
+        big = big.drop(columns=["Screenshots"])
+
+    ws = wb.create_sheet("CONSOLIDATED STATISTICS")
+
+    consolidated_target_collect = {"cash": 0.0, "qr": 0.0, "online": 0.0}
+
+    for res in valid_results:
+        tc = res[-1]
+        consolidated_target_collect["cash"] += float(tc.get("cash", 0))
+        consolidated_target_collect["qr"] += float(tc.get("qr", 0))
+        consolidated_target_collect["online"] += float(tc.get("online", 0))
+
+    rows = [
+        ["Total Bookings", int(big["Rooms"].sum())],
+        ["Total OYO Bookings", count(big, "OYO")],
+        ["Walk-in Bookings", count(big, "Walk-in")],
+        ["MMT Bookings", count(big, "MMT")],
+        ["BDC Bookings", count(big, "BDC")],
+        ["Agoda Bookings", count(big, "Agoda")],
+        ["CB Bookings", count(big, "CB")],
+        ["TA Bookings", count(big, "TA")],
+        ["OBA Bookings", count(big, "OBA")],
+        [],
+        ["Total Amount", round(big["Amount"].sum(), 2)],
+        ["Cash Amount", round(big["Cash"].sum(), 2)],
+        ["QR Amount", round(big["QR"].sum(), 2)],
+        ["Online Amount", round(big["Online"].sum(), 2)],
+        ["Discount Amount", round(big["Discount"].sum(), 2)],
+        ["Ballance Amount", round(big["Balance"].sum(), 2)],
+        [],
+        ["OYO Amount", amt(big, "OYO")],
+        ["Walk-in Amount", amt(big, "Walk-in")],
+        ["MMT Amount", amt(big, "MMT")],
+        ["BDC Amount", amt(big, "BDC")],
+        ["Agoda Amount", amt(big, "Agoda")],
+        ["CB Amount", amt(big, "CB")],
+        ["TA Amount", amt(big, "TA")],
+        ["OBA Amount", amt(big, "OBA")]
+    ]
+
+    for r in rows:
+        ws.append(r)
+
+    ws.append([])
+
+    grand_total_rooms = sum(r[2] for r in valid_results) * target_days
+    total_rooms_booked = int(big["Rooms"].sum())
+    total_amt = float(big["Amount"].sum())
+
+    arr = round(total_amt / total_rooms_booked, 2) if total_rooms_booked else 0
+
+    oyo_big = big[big["Booking Source"] == "OYO"]
+    oyo_rooms = int(oyo_big["Rooms"].sum())
+    oyo_amt = float(oyo_big["Amount"].sum())
+
+    app_arr = round(oyo_amt / oyo_rooms, 2) if oyo_rooms else 0
+
+    available_rooms = grand_total_rooms - total_rooms_booked
+    occupancy = round((total_rooms_booked / grand_total_rooms) * 100, 2) if grand_total_rooms else 0
+
+    ws.append(["Total Rooms", grand_total_rooms])
+    ws.append(["Booked Rooms", total_rooms_booked])
+    ws.append(["Available Rooms", available_rooms])
+    ws.append(["Occupancy", f"{occupancy}%"])
+    ws.append(["ARR", arr])
+    ws.append(["App ARR", app_arr])
+
+    ws.append([])
+
+    add_payment_tables(ws, big, consolidated_target_collect, title_prefix="CONSOLIDATED — ")
+
+    beautify(ws)
+
+    buffer = BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+
+    await send_telegram_excel_buffer(
+        buffer,
+        filename=f"Bookings_{TF_FMT}.xlsx",
+        caption=f"📊 Daily Bookings Report"
+    )
+
+    await browser.close()
+    await playwright.stop()
+
+    print("✅ EXCEL SENT TO TELEGRAM (NO LOCAL FILE)")
+    return
 
 
 
