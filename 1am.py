@@ -707,7 +707,7 @@ async def run_property_limited(P, TF, TT, HF, HT):
 # ================= MAIN =================
 async def main():
     print("========================================")
-    print(" OYO MONTHLY TELEGRAM AUTOMATION")
+    print(" OYO DAILY TELEGRAM AUTOMATION")
     print("========================================")
 
     global now
@@ -715,31 +715,31 @@ async def main():
 
 
     # ================= BUSINESS DATE CUTOVER (12 PM RULE) =================
-    # ================= ALWAYS YESTERDAY =================
-    target_date = (now - timedelta(days=1)).date()
-
+    if now.hour < 12:
+        target_date = (now - timedelta(days=1)).date()
+    else:
+        target_date = now.date()
 
     # ================= PREVIOUS MONTH (BASED ON TARGET_DATE) =================
-    # ================= CURRENT MONTH TO YESTERDAY =================
-    TF = target_date.replace(day=1).strftime("%Y-%m-%d")
-    TT = target_date.strftime("%Y-%m-%d")
+ 
+    TF = target_date.strftime("%Y-%m-%d")
+    TT = TF
 
-    # NEW FEATURE: total days in range
-    target_days = (datetime.strptime(TT, "%Y-%m-%d") - datetime.strptime(TF, "%Y-%m-%d")).days + 1
+    HF = (target_date - timedelta(days=30)).strftime("%Y-%m-%d")
+    HT = now.date().strftime("%Y-%m-%d")
 
+    target_days = 1  # 🔒 DAILY MODE (BASE EXPECTS THIS)
 
-    # ================= HISTORY RANGE (120 DAYS BEFORE → TARGET_DATE) =================
-    HF = (target_date - timedelta(days=120)).strftime("%Y-%m-%d")
-    HT = target_date.strftime("%Y-%m-%d")
+    TF_FMT = target_date.strftime("%d-%m-%Y")
+
+    print("AUTO BUSINESS DATE MODE")
+    print("TARGET DATE :", TF)
+    print("HISTORY     :", HF, "→", HT)
 
     # ================= MONTH LABEL (PREVIOUS MONTH) =================
-    MONTH_LABEL = datetime.strptime(TF, "%Y-%m-%d").strftime("%B %Y")
 
-    print("\nMONTHLY MODE (BUSINESS DATE CUTOVER ENABLED)")
-    print("BUSINESS DATE :", target_date.strftime("%Y-%m-%d"))
-    print("MONTH         :", MONTH_LABEL)
-    print("TARGET RANGE  :", TF, "→", TT)
-    print("HISTORY RANGE :", HF, "→", HT)
+
+   
 
 
     tf_date = datetime.strptime(TF, "%Y-%m-%d")
@@ -832,7 +832,7 @@ async def main():
 
     await send_telegram_excel_buffer(
         buffer,
-        filename=f"Collection_{MONTH_LABEL}.xlsx",
+        filename=f"Collection_{TF_FMT}.xlsx",
         caption="📊 Date Wise Collection Report (Paid Only)"
     )
 
