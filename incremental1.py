@@ -1020,7 +1020,9 @@ async def main():
 
         ws.append([])
         ws.append([])
-        add_payment_tables(ws, df, daily_collect, TF, TT)
+        month_start = target_date.replace(day=1).strftime("%Y-%m-%d")
+
+        add_payment_tables(ws, df, property_daily_collect, month_start, TT)
         add_property_details_box(ws, prop_details)
 
     # ================= CONSOLIDATED SHEET =================
@@ -1032,7 +1034,9 @@ async def main():
 
     ws = wb.create_sheet("CONSOLIDATED STATISTICS")
 
-    add_payment_tables(ws, big, consolidated_daily_collect, TF, TT, title_prefix="CONSOLIDATED — ")
+    month_start = target_date.replace(day=1).strftime("%Y-%m-%d")
+
+    add_payment_tables(ws, big, consolidated_daily_collect, month_start, TT, title_prefix="CONSOLIDATED — ")
     beautify(ws)
 
     # ================= SEND EXCEL =================
