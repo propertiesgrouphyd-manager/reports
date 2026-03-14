@@ -1,0 +1,1582 @@
+# ==============================
+# ULTRA FAST ASYNC MULTI PROPERTY AUTOMATION
+# MILLION BOOKING READY
+# BEAUTIFUL PREMIUM EXCEL
+# ==============================
+
+import os
+import json
+import asyncio
+import aiohttp
+import pandas as pd
+from datetime import datetime, timedelta
+from openpyxl import load_workbook
+import traceback
+from openpyxl import Workbook
+from openpyxl.utils.dataframe import dataframe_to_rows
+from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
+from io import BytesIO
+import pytz
+IST = pytz.timezone("Asia/Kolkata")
+now = datetime.now(IST)
+REPORT_FILE = "Revenue_Report.xlsx"
+
+MAX_FULL_RUN_RETRIES = 5
+FULL_RUN_RETRY_DELAY = 10  # seconds
+
+# ================= NEW: GLOBAL THROTTLES (NO FEATURE REMOVED) =================
+PROP_PARALLEL_LIMIT = 3      # max properties running in parallel
+DETAIL_PARALLEL_LIMIT = 10   # max detail calls in parallel per property
+
+prop_semaphore = asyncio.Semaphore(PROP_PARALLEL_LIMIT)
+
+# ================= NEW: TIMEOUTS (MORE STABLE MONTHLY) =================
+DETAIL_TIMEOUT = 25
+ROOMS_TIMEOUT = 25
+BATCH_TIMEOUT = 35
+
+# ================= TELEGRAM =================
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
+if not TELEGRAM_BOT_TOKEN:
+    raise RuntimeError("❌ TELEGRAM_BOT_TOKEN missing")
+
+
+CHAT_MAP = json.loads(os.getenv("TELEGRAM_CHAT_MAP", "{}"))
+
+def get_chat_id(name: str):
+    if name not in CHAT_MAP:
+        raise RuntimeError(f"❌ Chat ID not configured: {name}")
+    return int(CHAT_MAP[name])
+
+
+# choose chat key from secret map
+TELEGRAM_CHAT_ID = get_chat_id("6pm")   # change if needed
+
+
+# ================= PROPERTIES =================
+
+PROPERTIES_RAW = json.loads(os.getenv("OYO_PROPERTIES", "{}"))
+
+PROPERTIES = {int(k): v for k, v in PROPERTIES_RAW.items()}
+
+if not PROPERTIES:
+    raise RuntimeError("❌ OYO_PROPERTIES secret missing or empty")
+
+# ================= TELEGRAM =================
+# NEW FEATURE: REUSE SESSION (but keeps same capability)
+async def send_telegram_message(text, retries=3, session=None):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}
+
+    async def _post(sess):
+        async with sess.post(url, json=payload, timeout=25) as resp:
+            if resp.status == 200:
+                return True
+            raise RuntimeError(f"Telegram HTTP {resp.status}")
+
+    # if session not provided, keep old behavior (no feature removed)
+    if session is None:
+        for attempt in range(1, retries + 1):
+            try:
+                async with aiohttp.ClientSession() as s:
+                    if await _post(s):
+                        return
+            except Exception as e:
+                if attempt == retries:
+                    print("❌ TELEGRAM FAILED AFTER RETRIES")
+                    print(e)
+                await asyncio.sleep(2)
+        async with aiohttp.ClientSession() as s:
+            if not await _post(s):
+                raise RuntimeError("Telegram send failed")
+        return
+
+    # session provided (stable + fast)
+    for attempt in range(1, retries + 1):
+        try:
+            if await _post(session):
+                return
+        except Exception as e:
+            if attempt == retries:
+                print("❌ TELEGRAM FAILED AFTER RETRIES")
+                print(e)
+            await asyncio.sleep(2)
+
+    raise RuntimeError("Telegram send failed")
+
+# ================= BEAUTIFY EXCEL =================
+def beautify(ws):
+    blue = PatternFill("solid", fgColor="1F4E78")
+    light1 = PatternFill("solid", fgColor="DDEBF7")
+    light2 = PatternFill("solid", fgColor="F2F2F2")
+    yellow = PatternFill("solid", fgColor="FFF4CC")
+
+    bold_white = Font(color="FFFFFF", bold=True, size=12)
+    bold_black = Font(color="000000", bold=True, size=12)
+
+    thin = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+
+    max_row = ws.max_row
+    max_col = ws.max_column
+    ws.freeze_panes = "A2"
+
+    for col in range(1, max_col + 1):
+        c = ws.cell(row=1, column=col)
+        c.fill = blue
+        c.font = bold_white
+        c.alignment = Alignment(horizontal="center", vertical="center")
+        c.border = thin
+
+    for r in range(2, max_row + 1):
+        fill = light1 if r % 2 == 0 else light2
+        for c in range(1, max_col + 1):
+            cell = ws.cell(row=r, column=c)
+            if cell.value is None:
+                continue
+
+            # ✅ DO NOT override custom styled rows (headings/tables/boxes)
+            if cell.fill is not None and cell.fill.patternType is not None:
+                # already styled (blue headings, yellow labels etc.) → keep as-is
+                cell.border = thin
+                continue
+
+            cell.fill = fill
+            cell.border = thin
+
+
+    for col in ws.columns:
+        max_length = 0
+        col_letter = get_column_letter(col[0].column)
+        for cell in col:
+            if cell.value:
+                max_length = max(max_length, len(str(cell.value)))
+        ws.column_dimensions[col_letter].width = max_length + 5
+
+    for r in range(2, max_row + 1):
+        text = str(ws.cell(row=r, column=1).value or "")
+        if text.strip() == "":
+            continue
+        if "Booking" in text or "Amount" in text or "Total" in text or "OYO" in text:
+            ws.cell(row=r, column=1).fill = yellow
+            ws.cell(row=r, column=1).font = bold_black
+
+# ================= NEW: PREMIUM PROPERTY DETAILS BOX =================
+def add_property_details_box(ws, prop):
+    """
+    Adds a fixed premium 'box' at bottom:
+    Name, Alternate Name, Address, Google Map
+    """
+
+    blue = PatternFill("solid", fgColor="1F4E78")
+    light = PatternFill("solid", fgColor="DDEBF7")
+    white = PatternFill("solid", fgColor="FFFFFF")
+
+    bold_white = Font(color="FFFFFF", bold=True, size=12)
+    bold_black = Font(color="000000", bold=True, size=11)
+    normal = Font(color="000000", size=11)
+    link_font = Font(color="0563C1", underline="single", bold=True, size=11)
+
+    thin = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+
+    # fixed box width A:H (8 columns) looks premium always
+    start_col = 1
+    end_col = 8
+
+    def _border_range(r1, c1, r2, c2):
+        for rr in range(r1, r2 + 1):
+            for cc in range(c1, c2 + 1):
+                ws.cell(row=rr, column=cc).border = thin
+
+    def _merge(row, c1, c2, value, fill=None, font=None, center=False, wrap=False):
+        ws.merge_cells(start_row=row, start_column=c1, end_row=row, end_column=c2)
+        cell = ws.cell(row=row, column=c1)
+        cell.value = value
+        if fill:
+            cell.fill = fill
+        if font:
+            cell.font = font
+        cell.alignment = Alignment(
+            horizontal="center" if center else "left",
+            vertical="center",
+            wrap_text=wrap
+        )
+        return cell
+
+    # build address line
+    plot = (prop.get("plot_number") or "").strip()
+    street = (prop.get("street") or "").strip()
+    pincode = (prop.get("pincode") or "").strip()
+    city = (prop.get("city") or "").strip()
+    country = (prop.get("country") or "").strip()
+
+    address_parts = []
+    if plot: address_parts.append(plot)
+    if street: address_parts.append(street)
+    city_pin = " ".join([x for x in [city, pincode] if x]).strip()
+    if city_pin: address_parts.append(city_pin)
+    if country: address_parts.append(country)
+
+    address = ", ".join(address_parts).strip()
+
+    # spacing
+    ws.append([])
+    ws.append([])
+
+    top = ws.max_row + 1
+
+    # Header
+    _merge(top, start_col, end_col, "PROPERTY DETAILS", fill=blue, font=bold_white, center=True)
+    ws.row_dimensions[top].height = 22
+
+    # Row 1: Name
+    _merge(top + 1, 1, 2, "Name", fill=light, font=bold_black, wrap=True)
+    _merge(top + 1, 3, end_col, prop.get("name", "") or "", fill=white, font=normal, wrap=True)
+    ws.row_dimensions[top + 1].height = 20
+
+    # Row 2: Alternate Name
+    _merge(top + 2, 1, 2, "Alternative Name", fill=light, font=bold_black, wrap=True)
+    _merge(top + 2, 3, end_col, prop.get("alternate_name", "") or "", fill=white, font=normal, wrap=True)
+    ws.row_dimensions[top + 2].height = 20
+
+    # Row 3: Address
+    _merge(top + 3, 1, 2, "Address", fill=light, font=bold_black, wrap=True)
+    _merge(top + 3, 3, end_col, address, fill=white, font=normal, wrap=True)
+    ws.row_dimensions[top + 3].height = 45
+
+    # Row 4: Google Map (hyperlink + fixed look)
+    _merge(top + 4, 1, 2, "Google Map", fill=light, font=bold_black, wrap=True)
+
+    map_link = (prop.get("map_link") or "").strip()
+    if not map_link:
+        map_link = ""
+
+    link_cell = _merge(top + 4, 3, end_col, "OPEN IN GOOGLE MAPS" if map_link else "", fill=white, font=link_font, center=True)
+    if map_link:
+        link_cell.hyperlink = map_link
+
+    ws.row_dimensions[top + 4].height = 22
+
+    # apply border to whole box
+    _border_range(top, start_col, top + 4, end_col)
+
+
+# ================= NEW: PREMIUM PAYMENT TABLES =================
+def add_payment_tables(ws, df, today_collect, total_rooms, title_prefix=""):
+    """
+    Adds 2 premium tables BEFORE property details:
+    1) Booking Source x Payment Split
+    2) Target Date Collected (NOT divided by stay days)
+
+    today_collect = {"cash": x, "qr": x, "online": x}
+    """
+
+    blue = PatternFill("solid", fgColor="1F4E78")
+    light = PatternFill("solid", fgColor="DDEBF7")
+    white = PatternFill("solid", fgColor="FFFFFF")
+    yellow = PatternFill("solid", fgColor="FFF4CC")
+
+    bold_white = Font(color="FFFFFF", bold=True, size=12)
+    bold_black = Font(color="000000", bold=True, size=11)
+    normal = Font(color="000000", size=11)
+
+    thin = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+
+    def _style_row(row, start_col, end_col, fill=None, font=None, center=True):
+        for c in range(start_col, end_col + 1):
+            cell = ws.cell(row=row, column=c)
+            if fill: cell.fill = fill
+            if font: cell.font = font
+            cell.border = thin
+            cell.alignment = Alignment(horizontal="center" if center else "left", vertical="center")
+
+    def _merge(row, c1, c2, value, fill=None, font=None, center=True):
+        ws.merge_cells(start_row=row, start_column=c1, end_row=row, end_column=c2)
+        cell = ws.cell(row=row, column=c1)
+        cell.value = value
+        if fill: cell.fill = fill
+        if font: cell.font = font
+        cell.border = thin
+        cell.alignment = Alignment(horizontal="center" if center else "left", vertical="center")
+        return cell
+
+    # ================= PREMIUM WIDTH SETTINGS =================
+    start_col = 1
+    end_col = 8  # A:G premium fixed table width
+
+    premium_widths = [18, 14, 14, 14, 14, 14, 16]
+    for i, w in enumerate(premium_widths, start=1):
+        col_letter = get_column_letter(i)
+        current = ws.column_dimensions[col_letter].width
+        ws.column_dimensions[col_letter].width = max(current or 0, w)
+
+    # ✅ guaranteed 1 row space before payment tables
+    ws.append([])
+
+    # ================= TABLE 1: Booking Source vs Payment Mode =================
+    top = ws.max_row + 1
+    heading = f"{title_prefix}BOOKING SOURCE × PAYMENT MODE".strip()
+    _merge(top, start_col, end_col, heading, fill=blue, font=bold_white, center=True)
+    ws.row_dimensions[top].height = 20
+
+    headers = ["Source", "Cash", "QR", "Online", "Discount", "Balance", "Total"]
+    for idx, h in enumerate(headers, start=1):
+        ws.cell(row=top + 1, column=idx).value = h
+    _style_row(top + 1, start_col, end_col, fill=light, font=bold_black)
+
+    sources = ["OYO", "Walk-in", "MMT", "BDC", "Agoda", "CB", "TA", "OBA"]
+    r = top + 2
+
+    for src in sources:
+        part = df[df["Booking Source"] == src] if (not df.empty and "Booking Source" in df.columns) else df
+
+        cash = round(float(part["Cash"].sum()), 2) if (not part.empty and "Cash" in part.columns) else 0
+        qr = round(float(part["QR"].sum()), 2) if (not part.empty and "QR" in part.columns) else 0
+        online = round(float(part["Online"].sum()), 2) if (not part.empty and "Online" in part.columns) else 0
+        disc = round(float(part["Discount"].sum()), 2) if (not part.empty and "Discount" in part.columns) else 0
+        bal = round(float(part["Balance"].sum()), 2) if (not part.empty and "Balance" in part.columns) else 0
+        total = round(float(part["Amount"].sum()), 2) if (not part.empty and "Amount" in part.columns) else 0
+
+        ws.cell(row=r, column=1).value = src
+        ws.cell(row=r, column=2).value = cash
+        ws.cell(row=r, column=3).value = qr
+        ws.cell(row=r, column=4).value = online
+        ws.cell(row=r, column=5).value = disc
+        ws.cell(row=r, column=6).value = bal
+        ws.cell(row=r, column=7).value = total
+
+        for c in range(start_col, end_col + 1):
+            cell = ws.cell(row=r, column=c)
+            cell.border = thin
+            cell.font = normal
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.fill = white
+
+        ws.cell(row=r, column=1).fill = yellow
+        ws.cell(row=r, column=1).font = bold_black
+        r += 1
+    # ================= TOTAL ROW (TABLE 1) =================
+    total_cash = round(float(df["Cash"].sum()), 2) if (not df.empty and "Cash" in df.columns) else 0
+    total_qr = round(float(df["QR"].sum()), 2) if (not df.empty and "QR" in df.columns) else 0
+    total_online = round(float(df["Online"].sum()), 2) if (not df.empty and "Online" in df.columns) else 0
+    total_disc = round(float(df["Discount"].sum()), 2) if (not df.empty and "Discount" in df.columns) else 0
+    total_bal = round(float(df["Balance"].sum()), 2) if (not df.empty and "Balance" in df.columns) else 0
+    total_amt = round(float(df["Amount"].sum()), 2) if (not df.empty and "Amount" in df.columns) else 0
+
+    ws.cell(row=r, column=1).value = "TOTAL"
+    ws.cell(row=r, column=2).value = total_cash
+    ws.cell(row=r, column=3).value = total_qr
+    ws.cell(row=r, column=4).value = total_online
+    ws.cell(row=r, column=5).value = total_disc
+    ws.cell(row=r, column=6).value = total_bal
+    ws.cell(row=r, column=7).value = total_amt
+
+    # premium styling for total row
+    for c in range(start_col, end_col + 1):
+        cell = ws.cell(row=r, column=c)
+        cell.border = thin
+        cell.font = bold_black
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.fill = light  # light header style
+
+    ws.cell(row=r, column=1).fill = yellow
+    ws.cell(row=r, column=1).font = bold_black
+
+    r += 1
+
+
+    # ✅ exactly 1 blank row between tables
+    ws.append([])
+
+    # ================= TABLE 2: DATE WISE AMOUNT TABLE =================
+    top_dw = ws.max_row + 1
+    _merge(top_dw, start_col, end_col, "DATE WISE AMOUNT TABLE", fill=blue, font=bold_white, center=True)
+
+    dw_headers = ["Date", "Cash", "QR", "Online", "Discount", "Balance", "Total", "Score"]
+    for i, h in enumerate(dw_headers, 1):
+        ws.cell(row=top_dw + 1, column=i).value = h
+    _style_row(top_dw + 1, start_col, end_col, fill=light, font=bold_black)
+
+    rr = top_dw + 2
+
+    g = df.groupby("Date").sum(numeric_only=True) if not df.empty else pd.DataFrame()
+    
+
+    green = PatternFill("solid", fgColor="C6EFCE")
+    yellow_fill = PatternFill("solid", fgColor="FFF4CC")
+    red = PatternFill("solid", fgColor="FFC7CE")
+
+    tot_cash = tot_qr = tot_online = tot_disc = tot_bal = tot_total = 0
+
+    for d in sorted(g.index):
+        cash = round(g.loc[d].get("Cash", 0), 2)
+        qr = round(g.loc[d].get("QR", 0), 2)
+        online = round(g.loc[d].get("Online", 0), 2)
+        disc = round(g.loc[d].get("Discount", 0), 2)
+        bal = round(g.loc[d].get("Balance", 0), 2)
+        rooms = g.loc[d].get("Rooms", 0)
+
+        score = round((rooms / total_rooms) * 100, 2) if total_rooms else 0
+
+
+
+        tot_cash += cash
+        tot_qr += qr
+        tot_online += online
+        tot_disc += disc
+        tot_bal += bal
+
+        row_total = round(cash + qr + online + disc + bal, 2)
+        tot_total += row_total
+
+
+        ws.cell(row=rr, column=1).value = d
+        ws.cell(row=rr, column=2).value = cash
+        ws.cell(row=rr, column=3).value = qr
+        ws.cell(row=rr, column=4).value = online
+        ws.cell(row=rr, column=5).value = disc
+        ws.cell(row=rr, column=6).value = bal
+        ws.cell(row=rr, column=7).value = row_total
+        ws.cell(row=rr, column=8).value = f"{score}%"
+
+
+        fill = green if score > 80 else yellow_fill if score >= 60 else red
+
+        for c in range(start_col, end_col + 1):
+            cell = ws.cell(row=rr, column=c)
+            cell.fill = fill
+            cell.border = thin
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+
+        rr += 1
+
+    ws.cell(row=rr, column=1).value = "TOTAL"
+    ws.cell(row=rr, column=2).value = tot_cash
+    ws.cell(row=rr, column=3).value = tot_qr
+    ws.cell(row=rr, column=4).value = tot_online
+    ws.cell(row=rr, column=5).value = tot_disc
+    ws.cell(row=rr, column=6).value = tot_bal
+    ws.cell(row=rr, column=7).value = round(tot_total, 2)
+
+
+    for c in range(start_col, end_col + 1):
+        cell = ws.cell(row=rr, column=c)
+        cell.fill = yellow
+        cell.font = bold_black
+        cell.border = thin
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    ws.append([])
+
+
+   
+    # ✅ exactly 1 blank row after table 2
+    ws.append([])
+
+    # ================= TABLE 3: DATE WISE BOOKINGS TABLE =================
+    top_db = ws.max_row + 1
+    _merge(top_db, start_col, end_col, "DATE WISE BOOKINGS TABLE", fill=blue, font=bold_white, center=True)
+
+    db_headers = ["Date","OYO","Walk-in","MMT","BDC","Agoda","CB","TA","OBA","Total"]
+    for i, h in enumerate(db_headers, 1):
+        ws.cell(row=top_db + 1, column=i).value = h
+    _style_row(top_db + 1, start_col, 10, fill=light, font=bold_black)
+
+    rr = top_db + 2
+
+    sources = ["OYO","Walk-in","MMT","BDC","Agoda","CB","TA","OBA"]
+
+    col_totals = {s:0 for s in sources}
+    grand_total = 0
+
+    for d in sorted(df["Date"].unique()) if not df.empty else []:
+        row_total = 0
+        ws.cell(row=rr, column=1).value = d
+
+        for idx, src in enumerate(sources, start=2):
+            cnt = int(df[(df["Date"] == d) & (df["Booking Source"] == src)]["Rooms"].sum()) if not df.empty else 0
+            ws.cell(row=rr, column=idx).value = cnt
+            row_total += cnt
+            col_totals[src] += cnt
+
+        ws.cell(row=rr, column=10).value = row_total
+        grand_total += row_total
+
+        fill = light if rr % 2 == 0 else white
+
+        for c in range(1, 11):
+            cell = ws.cell(row=rr, column=c)
+            cell.fill = fill
+            cell.border = thin
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+
+
+        rr += 1
+
+    # ===== TOTAL ROW =====
+    ws.cell(row=rr, column=1).value = "TOTAL"
+
+    for idx, src in enumerate(sources, start=2):
+        ws.cell(row=rr, column=idx).value = col_totals[src]
+
+    ws.cell(row=rr, column=10).value = grand_total
+
+    fill = light if rr % 2 == 0 else white
+
+    for c in range(1, 11):
+        cell = ws.cell(row=rr, column=c)
+        cell.fill = fill
+        cell.border = thin
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+
+    ws.append([])
+
+
+# ================= BOOKING SOURCE =================
+def get_booking_source(b):
+    source = str(b.get("source", "") or "").strip()
+    ota = str(b.get("ota_source", "") or "").strip()
+    sub = str(b.get("sub_source", "") or "").strip()
+    corp = bool(b.get("is_corporate", False))
+
+    booking_identifier = str(b.get("booking_identifier", "") or "").strip()
+
+    # ✅ strongest indicator first
+    if booking_identifier == "TA":
+        return "TA"
+
+    # ✅ walk-in
+    if source == "Walk In":
+        return "Walk-in"
+
+    # ✅ corporate
+    if corp or sub == "corporate":
+        return "CB"
+
+    # ✅ OTA
+    if "Booking.com" in ota:
+        return "BDC"
+    if "GoMMT" in ota:
+        return "MMT"
+    if "Agoda" in ota:
+        return "Agoda"
+
+    # ✅ travel agent / TPO (THIS fixes your sub_source issue)
+    if source == "Travel Agent" or sub == "TPO":
+        return "TA"
+
+    # ✅ OYO direct
+    if source in [
+        "Android App",
+        "IOS App",
+        "Web Booking",
+        "Mobile Web Booking",
+        "Website Booking",
+        "Direct"
+    ]:
+        return "OYO"
+
+    # ✅ fallback
+    return "OBA"
+
+# ================= FETCH DETAILS =================
+async def fetch_booking_details(session, P, booking_no):
+    url = "https://www.oyoos.com/hms_ms/api/v1/visibility/booking_details_with_entities"
+    params = {
+        "qid": P["QID"],
+        "booking_id": booking_no,
+        "role": 0,
+        "platform": "OYOOS",
+        "country_code": 1
+    }
+    cookies = {"uif": P["UIF"], "uuid": P["UUID"]}
+    headers = {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "x-qid": str(P["QID"]),
+        "x-source-client": "merchant"
+    }
+
+    for attempt in range(1, 4):
+        try:
+            async with session.get(
+                url, params=params, headers=headers, cookies=cookies, timeout=DETAIL_TIMEOUT
+            ) as r:
+                if r.status != 200:
+                    raise RuntimeError("DETAIL API FAILED")
+
+                data = await r.json()
+
+                rooms = []
+                stay = data.get("entities", {}).get("stayDetails", {})
+                for s in stay.values():
+                    rn = s.get("room_number")
+                    if rn:
+                        rooms.append(rn)
+
+                booking = next(iter(data.get("entities", {}).get("bookings", {}).values()), {})
+                payments = booking.get("payments", [])
+
+                cash = qr = online = discount = 0
+                for p in payments:
+                    mode = p.get("mode", "")
+                    amt = float(p.get("amount", 0))
+                    if mode == "oyo_wizard_discount":
+                        discount += amt
+                    elif mode == "Cash at Hotel":
+                        cash += amt
+                    elif mode == "UPI QR":
+                        qr += amt
+                    else:
+                        online += amt
+
+                balance = booking.get("payable_amount", 0)
+                return rooms, cash, qr, online, discount, balance
+
+        except Exception:
+            # NEW FEATURE: Better backoff (reduces rate limits)
+            await asyncio.sleep(2 + attempt)
+
+    raise RuntimeError("DETAIL FETCH FAILED")
+
+# ================= BATCH FETCH =================
+async def fetch_bookings_batch(session, offset, f, t, P):
+    url = "https://www.oyoos.com/hms_ms/api/v1/get_booking_with_ids"
+    params = {
+        "qid": P["QID"],
+        "checkin_from": f,
+        "checkin_till": t,
+        "batch_count": 100,
+        "batch_offset": offset,
+        "visibility_required": "true",
+        "additionalParams": "payment_hold_transaction,guest,stay_details",
+        "decimal_price": "true",
+        "ascending": "true",
+        "sort_on": "checkin_date"
+    }
+    cookies = {"uif": P["UIF"], "uuid": P["UUID"]}
+    headers = {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "x-qid": str(P["QID"]),
+        "x-source-client": "merchant"
+    }
+
+    async with session.get(
+        url, params=params, cookies=cookies, headers=headers, timeout=BATCH_TIMEOUT
+    ) as r:
+        if r.status != 200:
+            raise RuntimeError("BATCH API FAILED")
+        return await r.json()
+
+
+# ================= NEW: PROPERTY DETAILS API =================
+async def fetch_property_details(session, P):
+    """
+    Fetches:
+    name, alternate_name, address fields, map_link
+    """
+    url = "https://www.oyoos.com/hms_ms/api/v1/location/property-details"
+    params = {"qid": P["QID"]}
+    cookies = {"uif": P["UIF"], "uuid": P["UUID"]}
+    headers = {
+        "accept": "application/json",
+        "x-qid": str(P["QID"]),
+        "x-source-client": "merchant"
+    }
+
+    for attempt in range(1, 4):
+        try:
+            async with session.get(url, params=params, cookies=cookies, headers=headers, timeout=20) as r:
+                if r.status != 200:
+                    raise RuntimeError(f"PROPERTY DETAILS API FAILED ({r.status})")
+                data = await r.json()
+                return {
+                    "name": str(data.get("name", "") or "").strip(),
+                    "alternate_name": str(data.get("alternate_name", "") or "").strip(),
+                    "plot_number": str(data.get("plot_number", "") or "").strip(),
+                    "street": str(data.get("street", "") or "").strip(),
+                    "pincode": str(data.get("pincode", "") or "").strip(),
+                    "city": str(data.get("city", "") or "").strip(),
+                    "country": str(data.get("country", "") or "").strip(),
+                    "map_link": str(data.get("map_link", "") or "").strip(),
+                    "latitude": data.get("latitude", None),
+                    "longitude": data.get("longitude", None),
+                }
+        except Exception:
+            await asyncio.sleep(2 + attempt)
+
+    # fallback safe empty
+    return {
+        "name": "",
+        "alternate_name": "",
+        "plot_number": "",
+        "street": "",
+        "pincode": "",
+        "city": "",
+        "country": "",
+        "map_link": "",
+        "latitude": None,
+        "longitude": None,
+    }
+
+
+# ================= FETCH TOTAL ROOMS =================
+async def fetch_total_rooms(session, P):
+    url = "https://www.oyoos.com/hms_ms/api/v1/hotels/roomsNew"
+    params = {"qid": P["QID"]}
+    cookies = {"uif": P["UIF"], "uuid": P["UUID"]}
+    headers = {
+        "accept": "application/json",
+        "x-qid": str(P["QID"]),
+        "x-source-client": "merchant"
+    }
+
+    for attempt in range(1, 4):
+        try:
+            async with session.get(
+                url, params=params, cookies=cookies, headers=headers, timeout=ROOMS_TIMEOUT
+            ) as r:
+                if r.status != 200:
+                    raise RuntimeError("ROOM API FAILED")
+
+                data = await r.json()
+                rooms = data.get("rooms", {})
+                return len(rooms)
+
+        except Exception:
+            await asyncio.sleep(2 + attempt)
+
+    return 0
+
+# ================= PROCESS PROPERTY =================
+async def process_property(P, TF, TT, HF, HT):
+    print(f"PROCESSING FAST ASYNC → {P['name']}")
+
+    async with aiohttp.ClientSession() as session:
+        total_rooms = await fetch_total_rooms(session, P)
+        property_details = await fetch_property_details(session, P)
+
+
+        if total_rooms == 0:
+            raise RuntimeError("TOTAL ROOMS FETCH FAILED")
+
+        # NEW FEATURE: limit detail calls per property
+        detail_semaphore = asyncio.Semaphore(DETAIL_PARALLEL_LIMIT)
+        # ================= NEW: TARGET DATE COLLECTION (TF) =================
+        target_collect_date = str(TF).strip()  # ✅ today means TARGET FROM date (TF)
+        target_collect = {"cash": 0.0, "qr": 0.0, "online": 0.0}
+        target_seen_bookings = set()
+
+
+        async def limited_detail_call(booking_no):
+            async with detail_semaphore:
+                return await fetch_booking_details(session, P, booking_no)
+
+        all_rows = []
+        offset = 0
+        upcoming_count = cancelled_count = inhouse_count = checkedout_count = 0
+
+        while True:
+            data = await fetch_bookings_batch(session, offset, HF, HT, P)
+
+            if not data or not data.get("bookingIds"):
+                break
+
+            bookings = data.get("entities", {}).get("bookings", {})
+
+            if not bookings:
+                raise RuntimeError("BOOKING ENTITY EMPTY")
+
+            curr = datetime.strptime(TF, "%Y-%m-%d")
+            end = datetime.strptime(TT, "%Y-%m-%d")
+
+            while curr <= end:
+                target = curr.strftime("%Y-%m-%d")
+                target_dt = curr
+
+                tasks, mapping = [], []
+
+                for b in bookings.values():
+                    status = (b.get("status") or "").strip()
+                    ci = datetime.strptime(b["checkin"], "%Y-%m-%d")
+                    co = datetime.strptime(b["checkout"], "%Y-%m-%d")
+                    tf_date = datetime.strptime(TF, "%Y-%m-%d")
+
+                    # ---- STATUS COUNTS (UNCHANGED) ----
+                    if status == "Checked In" and ci <= tf_date:
+                        inhouse_count += 1
+                    elif status == "Checked Out" and co.date() == now.date():
+                        checkedout_count += 1
+                    elif status == "Confirm Booking" and ci.date() == now.date():
+                        upcoming_count += 1
+                    elif status == "Cancelled Booking" and ci <= tf_date:
+                        cancelled_count += 1
+
+                    if status not in ["Checked In", "Checked Out"]:
+                        continue
+
+                    if not (target_dt >= ci and target_dt < co):
+                        continue
+
+                    tasks.append(limited_detail_call(b["booking_no"]))
+                    mapping.append((b, target, ci, co))
+
+                if tasks:
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                else:
+                    results = []
+
+                for res, (b, target, ci, co) in zip(results, mapping):
+                    if isinstance(res, Exception):
+                        # detail fail shouldn't kill property
+                        continue
+
+                    rooms, cash, qr, online, discount, balance = res
+                    # ================= NEW: TARGET DATE COLLECTION (NOT DIVIDED) =================
+                    # Rule: Collect only bookings whose CHECK-IN is exactly TF
+                    # Add once per booking_id (not repeated for each stay date)
+                    if str(b.get("checkin", "")).strip() == target_collect_date and b["booking_no"] not in target_seen_bookings:
+                        target_seen_bookings.add(b["booking_no"])
+                        target_collect["cash"] += float(cash or 0)
+                        target_collect["qr"] += float(qr or 0)
+                        target_collect["online"] += float(online or 0)
+
+                    stay = max((co - ci).days, 1)
+                    paid = float(b.get("get_amount_paid") or 0)
+                    total_amt = paid + float(balance or 0)
+
+                    all_rows.append({
+                        "Date": target,
+                        "Booking Id": b["booking_no"],
+                        "Guest Name": b["guest_name"],
+                        "Status": b.get("status"),
+                        "Booking Source": get_booking_source(b),
+                        "Check In": b["checkin"],
+                        "Check Out": b["checkout"],
+                        "Rooms": b.get("no_of_rooms", 1),
+                        "Room Numbers": ", ".join(rooms),
+                        "Amount": round(total_amt / stay, 2),
+                        "Cash": round(cash / stay, 2),
+                        "QR": round(qr / stay, 2),
+                        "Online": round(online / stay, 2),
+                        "Discount": round(discount / stay, 2),
+                        "Balance": round(balance / stay, 2),
+                    })
+
+                curr += timedelta(days=1)
+
+            if len(data["bookingIds"]) < 100:
+                break
+
+            offset += 100
+
+        df = pd.DataFrame(all_rows)
+
+        # NEW FEATURE: DO NOT FAIL PROPERTY IF NO ROWS
+        if df.empty:
+            print(f"⚠️ NO ROWS → {P['name']} (month has no stays)")
+            df = pd.DataFrame(columns=[
+                "Date", "Booking Id", "Guest Name", "Status", "Booking Source",
+                "Check In", "Check Out", "Rooms", "Room Numbers",
+                "Amount", "Cash", "QR", "Online", "Discount", "Balance"
+            ])
+
+        df.columns = [str(c).strip() for c in df.columns]
+
+        return (
+            P["name"],
+            df,
+            total_rooms,
+            inhouse_count,
+            checkedout_count,
+            upcoming_count,
+            cancelled_count,
+            property_details,
+            target_collect
+        )
+
+# ================= RELIABILITY WRAPPER =================
+async def run_property_with_retry(P, TF, TT, HF, HT, retries=3):
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            return await process_property(P, TF, TT, HF, HT)
+        except Exception as e:
+            last_error = e
+            print(f"RETRY {attempt}/{retries} → {P['name']} :: {e}")
+            await asyncio.sleep(2 + attempt * 2)
+    raise RuntimeError(f"PROPERTY FAILED → {P['name']}") from last_error
+
+# NEW FEATURE: PROPERTY PARALLEL LIMITER (reduces failures)
+async def run_property_limited(P, TF, TT, HF, HT):
+    async with prop_semaphore:
+        return await run_property_with_retry(P, TF, TT, HF, HT)
+
+# ================= COUNT / AMOUNT =================
+def count(df, src):
+    if df.empty:
+        return 0
+    return int(df[df["Booking Source"] == src]["Rooms"].sum())
+
+def amt(df, src):
+    if df.empty:
+        return 0
+    return round(df[df["Booking Source"] == src]["Amount"].sum(), 2)
+
+def count_upcoming(df, tf):
+    tf_date = datetime.strptime(tf, "%Y-%m-%d")
+    next_date = tf_date + timedelta(days=1)
+
+    c = 0
+    for _, r in df.iterrows():
+        if r.get("Status") != "Confirm Booking":
+            continue
+
+        d = datetime.strptime(r["Date"], "%Y-%m-%d")
+
+        if d == tf_date and now.hour >= 12:
+            c += 1
+        elif d == next_date and now.hour < 12:
+            c += 1
+
+    return c
+
+def count_cancelled(df, tf):
+    tf_date = datetime.strptime(tf, "%Y-%m-%d")
+    next_date = tf_date + timedelta(days=1)
+
+    c = 0
+    for _, r in df.iterrows():
+        if r.get("Status") != "Cancelled Booking":
+            continue
+
+        d = datetime.strptime(r["Date"], "%Y-%m-%d")
+
+        if d == tf_date or d == next_date:
+            c += 1
+
+    return c
+
+
+
+
+
+
+async def send_telegram_excel_buffer(buffer, filename, caption=None):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument"
+
+    data = aiohttp.FormData()
+    data.add_field("chat_id", str(TELEGRAM_CHAT_ID))
+    if caption:
+        data.add_field("caption", caption)
+
+    data.add_field(
+        "document",
+        buffer,
+        filename=filename,
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, data=data, timeout=120) as resp:
+            if resp.status != 200:
+                text = await resp.text()
+                raise RuntimeError(f"Telegram send failed: {text}")
+
+
+
+
+
+
+
+def load_existing_report():
+    """
+    Reads existing Excel report and returns:
+    last_date, existing dataframes by sheet
+    """
+    if not os.path.exists(REPORT_FILE):
+        return None, {}
+
+    print("📂 Existing report found:", REPORT_FILE)
+
+    existing_data = {}
+    last_date = None
+
+    wb = load_workbook(REPORT_FILE, data_only=True)
+
+    for sheet in wb.sheetnames:
+        if sheet == "CONSOLIDATED STATISTICS":
+            continue
+
+        ws = wb[sheet]
+        rows = list(ws.values)
+
+        if len(rows) < 2:
+            continue
+
+        headers = rows[0]
+        data = rows[1:]
+
+        df = pd.DataFrame(data, columns=headers)
+
+        if "Booking Id" in df.columns:
+            df = df[df["Booking Id"].notna()]
+
+        if "Date" in df.columns:
+            df = df[df["Date"].notna()]
+
+            if not df.empty:
+                df["Date"] = pd.to_datetime(df["Date"])
+                sheet_last = df["Date"].max().date()
+
+                if last_date is None or sheet_last > last_date:
+                    last_date = sheet_last
+
+        existing_data[sheet] = df
+
+    return last_date, existing_data
+
+
+
+
+
+def merge_existing_data(name, df, existing_data):
+
+    if name in existing_data:
+
+        old_df = existing_data[name]
+
+        if old_df is not None and not old_df.empty:
+            df = pd.concat([old_df, df], ignore_index=True)
+            df = df.drop_duplicates(subset=["Booking Id", "Date"], keep="last")
+            df = df.sort_values("Date")
+
+    return df
+
+
+
+
+
+
+# ================= MAIN =================
+# ================= MAIN (MONTH MODE — BASE STRENGTH GUARANTEE) =================
+async def main():
+    print("========================================")
+    print(" OYO MONTHLY TELEGRAM AUTOMATION")
+    print("========================================")
+
+    global now
+    now = datetime.now(IST)
+
+    # ================= LOAD EXISTING REPORT =================
+    existing_last_date, existing_data = load_existing_report()
+
+
+    # ================= BUSINESS DATE CUTOVER (12 PM RULE) =================
+    # ================= ALWAYS YESTERDAY =================
+    target_date = (now - timedelta(days=1)).date()
+
+
+    # ================= PREVIOUS MONTH (BASED ON TARGET_DATE) =================
+    # ================= CURRENT MONTH TO YESTERDAY =================
+    if existing_last_date:
+        TF = (existing_last_date + timedelta(days=1)).strftime("%Y-%m-%d")
+        print("📈 Incremental run from:", TF)
+    else:
+        TF = target_date.replace(day=1).strftime("%Y-%m-%d")
+        print("🆕 Fresh month run")
+
+    TT = target_date.strftime("%Y-%m-%d")
+
+    # Skip run if report already up to date
+    if TF > TT:
+        print("✔ Report already up to date.")
+        return
+
+    # NEW FEATURE: total days in range
+    month_start = target_date.replace(day=1)
+
+    target_days = (target_date - month_start).days + 1
+
+
+    # ================= HISTORY RANGE (120 DAYS BEFORE → TARGET_DATE) =================
+    HF = (target_date - timedelta(days=30)).strftime("%Y-%m-%d")
+    HT = target_date.strftime("%Y-%m-%d")
+
+    # ================= MONTH LABEL (PREVIOUS MONTH) =================
+    MONTH_LABEL = datetime.strptime(TF, "%Y-%m-%d").strftime("%B %Y")
+
+    print("\nMONTHLY MODE (BUSINESS DATE CUTOVER ENABLED)")
+    print("BUSINESS DATE :", target_date.strftime("%Y-%m-%d"))
+    print("MONTH         :", MONTH_LABEL)
+    print("TARGET RANGE  :", TF, "→", TT)
+    print("HISTORY RANGE :", HF, "→", HT)
+
+
+
+    # ================= SMART RETRY (ONLY FAILED PROPERTIES) =================
+    pending = {k: v for k, v in PROPERTIES.items()}
+    success_results = {}
+
+    for run_attempt in range(1, MAX_FULL_RUN_RETRIES + 1):
+        if not pending:
+            break
+
+        print(f"\n🔁 PARTIAL RUN ATTEMPT {run_attempt}/{MAX_FULL_RUN_RETRIES}")
+        print(f"⏳ Pending Properties: {len(pending)}")
+
+        tasks = [run_property_limited(P, TF, TT, HF, HT) for P in pending.values()]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        new_pending = {}
+        for key, (P, result) in zip(list(pending.keys()), zip(pending.values(), results)):
+
+            if isinstance(result, Exception):
+                print(f"❌ FAILED → {P['name']} :: {result}")
+                new_pending[key] = P
+                continue
+
+            name, df, *_ = result
+
+            # strict verify (df always exists now; empty allowed as valid)
+            if df is None:
+                print(f"❌ EMPTY DATA → {name}")
+                new_pending[key] = P
+                continue
+
+            success_results[key] = result
+            print(f"✅ OK → {name} rows={len(df)}")
+
+        pending = new_pending
+
+        if pending:
+            if run_attempt == MAX_FULL_RUN_RETRIES:
+                failed_names = [p["name"] for p in pending.values()]
+                raise RuntimeError(f"FINAL FAILURE: Properties failed after retries: {failed_names}")
+
+            print(f"🔁 RETRYING ONLY FAILED PROPERTIES after {FULL_RUN_RETRY_DELAY}s...")
+            await asyncio.sleep(FULL_RUN_RETRY_DELAY)
+
+    # ================= FINAL VERIFICATION =================
+    valid_results = [success_results[k] for k in PROPERTIES.keys() if k in success_results]
+
+    if len(valid_results) != len(PROPERTIES):
+        missing = [PROPERTIES[k]["name"] for k in PROPERTIES.keys() if k not in success_results]
+        raise RuntimeError(f"DATA INCOMPLETE: Missing properties: {missing}")
+
+    print("✅ DATA VERIFIED — ALL PROPERTIES PRESENT")
+
+    async with aiohttp.ClientSession() as tg_session:
+        # ================= PER-PROPERTY MONTHLY REPORTS =================
+            # ================= EXCEL CREATION (UNCHANGED) =================
+            wb = Workbook()
+            wb.remove(wb.active)
+            all_dfs = []
+
+            for name, df, total_rooms, inhouse, checkedout, upcoming, cancelled, prop_details, target_collect in valid_results:
+
+                df = merge_existing_data(name, df, existing_data)
+
+                all_dfs.append(df)
+                ws = wb.create_sheet(name)
+
+                for r in dataframe_to_rows(df, index=False, header=True):
+                    ws.append(r)
+
+                beautify(ws)
+
+                ws.append([])
+                stats = [
+                    ["Total Bookings", int(df["Rooms"].sum())],
+                    ["Total OYO Bookings", count(df, "OYO")],
+                    ["Walk-in Bookings", count(df, "Walk-in")],
+                    ["MMT Bookings", count(df, "MMT")],
+                    ["BDC Bookings", count(df, "BDC")],
+                    ["Agoda Bookings", count(df, "Agoda")],
+                    ["CB Bookings", count(df, "CB")],
+                    ["TA Bookings", count(df, "TA")],
+                    ["OBA Bookings", count(df, "OBA")],
+                    [],
+                    ["Total Amount", round(df["Amount"].sum(), 2)],
+                    ["Cash Amount", round(df["Cash"].sum(), 2)],
+                    ["QR Amount", round(df["QR"].sum(), 2)],
+                    ["Online Amount", round(df["Online"].sum(), 2)],
+                    ["Discount Amount", round(df["Discount"].sum(), 2)],
+                    ["Balance Amount", round(df["Balance"].sum(), 2)],
+                    [],
+                    ["OYO Amount", amt(df, "OYO")],
+                    ["Walk-in Amount", amt(df, "Walk-in")],
+                    ["MMT Amount", amt(df, "MMT")],
+                    ["BDC Amount", amt(df, "BDC")],
+                    ["Agoda Amount", amt(df, "Agoda")],
+                    ["CB Amount", amt(df, "CB")],
+                    ["TA Amount", amt(df, "TA")],
+                    ["OBA Amount", amt(df, "OBA")]
+                ]
+
+                for s in stats:
+                    ws.append(s)
+
+                ws.append([])
+
+                total_booked_rooms = int(df["Rooms"].sum())
+                total_amt = float(df["Amount"].sum())
+                arr = round(total_amt / total_booked_rooms, 2) if total_booked_rooms else 0
+
+                oyo_df = df[df["Booking Source"] == "OYO"]
+                oyo_rooms = int(oyo_df["Rooms"].sum())
+                oyo_amount = float(oyo_df["Amount"].sum())
+                app_arr = round(oyo_amount / oyo_rooms, 2) if oyo_rooms else 0
+
+                effective_total_rooms = total_rooms * target_days
+
+                available_rooms = effective_total_rooms - total_booked_rooms
+                occupancy = round((total_booked_rooms / effective_total_rooms) * 100, 2) if effective_total_rooms else 0
+
+        
+
+                ws.append(["Total Rooms", effective_total_rooms])
+                ws.append(["Booked Rooms", total_booked_rooms])
+                ws.append(["Available Rooms", available_rooms])
+                ws.append(["Occupancy", f"{occupancy}%"])
+                ws.append(["ARR", arr])
+                ws.append(["App ARR", app_arr])
+
+                ws.append([])
+                ws.append([])
+                add_payment_tables(ws, df, target_collect, total_rooms)
+                add_property_details_box(ws, prop_details)
+
+            # ================= CONSOLIDATED =================
+            big = pd.concat(all_dfs) if all_dfs else pd.DataFrame()
+            ws = wb.create_sheet("CONSOLIDATED STATISTICS")
+                        # ================= NEW: CONSOLIDATED TARGET COLLECTION =================
+            consolidated_target_collect = {"cash": 0.0, "qr": 0.0, "online": 0.0}
+            for res in valid_results:
+                tc = res[-1]  # target_collect
+                consolidated_target_collect["cash"] += float(tc.get("cash", 0))
+                consolidated_target_collect["qr"] += float(tc.get("qr", 0))
+                consolidated_target_collect["online"] += float(tc.get("online", 0))
+
+
+            rows = [
+                ["Total Bookings", int(big["Rooms"].sum())],
+                ["Total OYO Bookings", count(big, "OYO")],
+                ["Walk-in Bookings", count(big, "Walk-in")],
+                ["MMT Bookings", count(big, "MMT")],
+                ["BDC Bookings", count(big, "BDC")],
+                ["Agoda Bookings", count(big, "Agoda")],
+                ["CB Bookings", count(big, "CB")],
+                ["TA Bookings", count(big, "TA")],
+                ["OBA Bookings", count(big, "OBA")],
+                [],
+                ["Total Amount", round(big["Amount"].sum(), 2)],
+                ["Cash Amount", round(big["Cash"].sum(), 2)],
+                ["QR Amount", round(big["QR"].sum(), 2)],
+                ["Online Amount", round(big["Online"].sum(), 2)],
+                ["Discount Amount", round(big["Discount"].sum(), 2)],
+                ["Balance Amount", round(big["Balance"].sum(), 2)],
+                [],
+                ["OYO Amount", amt(big, "OYO")],
+                ["Walk-in Amount", amt(big, "Walk-in")],
+                ["MMT Amount", amt(big, "MMT")],
+                ["BDC Amount", amt(big, "BDC")],
+                ["Agoda Amount", amt(big, "Agoda")],
+                ["CB Amount", amt(big, "CB")],
+                ["TA Amount", amt(big, "TA")],
+                ["OBA Amount", amt(big, "OBA")]
+            ]
+
+            for r in rows:
+                ws.append(r)
+
+            ws.append([])
+
+            grand_total_rooms = sum(r[2] for r in valid_results) * target_days
+            total_rooms_booked = int(big["Rooms"].sum())
+            total_amt = float(big["Amount"].sum())
+            arr = round(total_amt / total_rooms_booked, 2) if total_rooms_booked else 0
+
+            oyo_big = big[big["Booking Source"] == "OYO"]
+            oyo_rooms = int(oyo_big["Rooms"].sum())
+            oyo_amt = float(oyo_big["Amount"].sum())
+            app_arr = round(oyo_amt / oyo_rooms, 2) if oyo_rooms else 0
+
+            available_rooms = grand_total_rooms - total_rooms_booked
+            occupancy = round((total_rooms_booked / grand_total_rooms) * 100, 2) if grand_total_rooms else 0
+
+            ws.append(["Total Rooms", grand_total_rooms])
+            ws.append(["Booked Rooms", total_rooms_booked])
+            ws.append(["Available Rooms", available_rooms])
+            ws.append(["Occupancy", f"{occupancy}%"])
+            ws.append(["ARR", arr])
+            ws.append(["App ARR", app_arr])
+            
+            blue = PatternFill("solid", fgColor="1F4E78")
+            light = PatternFill("solid", fgColor="DDEBF7")
+            green = PatternFill("solid", fgColor="C6EFCE")
+            yellow = PatternFill("solid", fgColor="FFF4CC")
+            red = PatternFill("solid", fgColor="FFC7CE")
+
+            bold_white = Font(color="FFFFFF", bold=True, size=12)
+            bold_black = Font(color="000000", bold=True, size=11)
+            normal = Font(color="000000", size=11)
+
+            thin = Border(
+                left=Side(style='thin'),
+                right=Side(style='thin'),
+                top=Side(style='thin'),
+                bottom=Side(style='thin')
+            )
+             
+
+                        # ================= PROPERTY WISE AMOUNT TABLE =================
+            ws.append([])
+
+            start_amt_row = ws.max_row + 1
+            ws.merge_cells(start_row=start_amt_row, start_column=1, end_row=start_amt_row, end_column=7)
+            cell = ws.cell(row=start_amt_row, column=1)
+            cell.value = "PROPERTY WISE AMOUNT"
+            cell.fill = blue
+            cell.font = bold_white
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = thin
+
+            amt_headers = ["Property Code", "Cash", "QR", "Online", "Discount", "Balance", "Total Amount"]
+            for i, h in enumerate(amt_headers, 1):
+                ws.cell(row=start_amt_row + 1, column=i).value = h
+                ws.cell(row=start_amt_row + 1, column=i).fill = light
+                ws.cell(row=start_amt_row + 1, column=i).font = bold_black
+                ws.cell(row=start_amt_row + 1, column=i).border = thin
+                ws.cell(row=start_amt_row + 1, column=i).alignment = Alignment(horizontal="center")
+
+            rr = start_amt_row + 2
+
+            tot_cash = tot_qr = tot_online = tot_disc = tot_bal = tot_amt = 0
+
+            for name, df_prop, *_ in valid_results:
+                cash = round(df_prop["Cash"].sum(), 2)
+                qr = round(df_prop["QR"].sum(), 2)
+                online = round(df_prop["Online"].sum(), 2)
+                disc = round(df_prop["Discount"].sum(), 2)
+                bal = round(df_prop["Balance"].sum(), 2)
+                amt_total = round(df_prop["Amount"].sum(), 2)
+
+                tot_cash += cash
+                tot_qr += qr
+                tot_online += online
+                tot_disc += disc
+                tot_bal += bal
+                tot_amt += amt_total
+
+                vals = [name, cash, qr, online, disc, bal, amt_total]
+                for c, v in enumerate(vals, 1):
+                    ws.cell(row=rr, column=c).value = v
+                    ws.cell(row=rr, column=c).border = thin
+                    ws.cell(row=rr, column=c).alignment = Alignment(horizontal="center")
+                rr += 1
+
+            # totals row
+            totals = ["TOTAL", round(tot_cash,2), round(tot_qr,2), round(tot_online,2),
+                      round(tot_disc,2), round(tot_bal,2), round(tot_amt,2)]
+
+            for c, v in enumerate(totals, 1):
+                ws.cell(row=rr, column=c).value = v
+                ws.cell(row=rr, column=c).fill = yellow
+                ws.cell(row=rr, column=c).font = bold_black
+                ws.cell(row=rr, column=c).border = thin
+                ws.cell(row=rr, column=c).alignment = Alignment(horizontal="center")
+
+            # ================= PROPERTY WISE BOOKINGS TABLE =================
+            ws.append([])
+
+            start_book_row = ws.max_row + 1
+            ws.merge_cells(start_row=start_book_row, start_column=1, end_row=start_book_row, end_column=10)
+            cell = ws.cell(row=start_book_row, column=1)
+            cell.value = "PROPERTY WISE BOOKINGS"
+            cell.fill = blue
+            cell.font = bold_white
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = thin
+
+            book_headers = ["Property Code","OYO","Walk-in","MMT","BDC","Agoda","CB","TA","OBA","Total"]
+            for i, h in enumerate(book_headers, 1):
+                ws.cell(row=start_book_row + 1, column=i).value = h
+                ws.cell(row=start_book_row + 1, column=i).fill = light
+                ws.cell(row=start_book_row + 1, column=i).font = bold_black
+                ws.cell(row=start_book_row + 1, column=i).border = thin
+                ws.cell(row=start_book_row + 1, column=i).alignment = Alignment(horizontal="center")
+
+            rr = start_book_row + 2
+
+            col_totals = [0]*8
+
+            for name, df_prop, *_ in valid_results:
+                vals = [
+                    name,
+                    count(df_prop,"OYO"),
+                    count(df_prop,"Walk-in"),
+                    count(df_prop,"MMT"),
+                    count(df_prop,"BDC"),
+                    count(df_prop,"Agoda"),
+                    count(df_prop,"CB"),
+                    count(df_prop,"TA"),
+                    count(df_prop,"OBA")
+                ]
+
+                total_row = sum(vals[1:])
+                vals.append(total_row)
+
+                for i in range(1,9):
+                    col_totals[i-1] += vals[i]
+
+                for c, v in enumerate(vals, 1):
+                    ws.cell(row=rr, column=c).value = v
+                    ws.cell(row=rr, column=c).border = thin
+                    ws.cell(row=rr, column=c).alignment = Alignment(horizontal="center")
+                rr += 1
+
+            total_vals = ["TOTAL"] + col_totals + [sum(col_totals)]
+
+            for c, v in enumerate(total_vals, 1):
+                ws.cell(row=rr, column=c).value = v
+                ws.cell(row=rr, column=c).fill = yellow
+                ws.cell(row=rr, column=c).font = bold_black
+                ws.cell(row=rr, column=c).border = thin
+                ws.cell(row=rr, column=c).alignment = Alignment(horizontal="center")
+          
+
+            # ================= NEW: PROPERTY SCORE TABLE (CONSOLIDATED ONLY) =================
+            ws.append([])  # ✅ 1 row space after App ARR
+
+            
+
+            start_row = ws.max_row + 1
+
+            # Header merged A:C
+            ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=3)
+            hcell = ws.cell(row=start_row, column=1)
+            hcell.value = "PROPERTY SCORE"
+            hcell.fill = blue
+            hcell.font = bold_white
+            hcell.alignment = Alignment(horizontal="center", vertical="center")
+            hcell.border = thin
+            ws.cell(row=start_row, column=2).border = thin
+            ws.cell(row=start_row, column=3).border = thin
+            ws.row_dimensions[start_row].height = 20
+
+            # Column headers
+            headers = ["Property Code", "Revenue", "Score", "Revenue Loss"]
+            for idx, h in enumerate(headers, start=1):
+                ws.cell(row=start_row + 1, column=idx).value = h
+
+            for c in [1, 2, 3, 4]:
+                cell = ws.cell(row=start_row + 1, column=c)
+                cell.fill = light
+                cell.font = bold_black
+                cell.border = thin
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+
+            r = start_row + 2
+
+            # Each property score + revenue loss
+            for name, df_prop, total_rooms_prop, *_ in valid_results:
+                booked_rooms_prop = int(df_prop["Rooms"].sum()) if not df_prop.empty else 0
+                total_rooms_effective = (total_rooms_prop * target_days) if total_rooms_prop else 0
+                available_rooms_prop = total_rooms_effective - booked_rooms_prop
+
+                total_amount_prop = float(df_prop["Amount"].sum()) if not df_prop.empty else 0.0
+
+                score = round((booked_rooms_prop / total_rooms_effective) * 100, 2) if total_rooms_effective else 0.0
+
+                # ✅ Revenue Loss = Total Amount * (Available Rooms / Booked Rooms)
+                if booked_rooms_prop > 0:
+                    revenue_loss = round(total_amount_prop * (available_rooms_prop / booked_rooms_prop), 2)
+                else:
+                    revenue_loss = 0.0
+
+                ws.cell(row=r, column=1).value = name
+                ws.cell(row=r, column=2).value = round(total_amount_prop, 2)   # Revenue
+                ws.cell(row=r, column=3).value = f"{score}%"
+                ws.cell(row=r, column=4).value = revenue_loss
+
+
+                # Conditional fill based on score
+                if score > 80:
+                    row_fill = green
+                elif score >= 60:
+                    row_fill = yellow
+                else:
+                    row_fill = red
+
+                for c in [1, 2, 3, 4]:
+                    cell = ws.cell(row=r, column=c)
+                    cell.fill = row_fill
+                    cell.font = normal
+                    cell.border = thin
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+
+                r += 1
+
+            ws.append([])  # ✅ 1 row space after table
+
+            
+                        # ================= NEW: CONSOLIDATED PAYMENT TABLES =================
+            grand_rooms = sum(r[2] for r in valid_results)
+
+            add_payment_tables(ws, big, consolidated_target_collect, grand_rooms, title_prefix="CONSOLIDATED — ")
+
+
+
+
+            beautify(ws)
+
+            # ================= SEND EXCEL TO TELEGRAM (NO LOCAL SAVE) =================
+            wb.save(REPORT_FILE)
+            print("💾 Excel saved:", REPORT_FILE)
+
+            buffer = BytesIO()
+            wb.save(buffer)
+            buffer.seek(0)
+
+            await send_telegram_excel_buffer(
+                buffer,
+                filename=f"Revenue_{MONTH_LABEL}.xlsx",
+                caption=f"📊 Monthly Revenue Report"
+            )
+
+
+            print("✅ Excel saved locally and sent to Telegram")
+            return
+
+
+
+
+# ================= RUN =================
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        print("SCRIPT CRASHED")
+        print(e)
+        traceback.print_exc()
+        print("SCRIPT CRASHED", e, flush=True)
