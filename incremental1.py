@@ -1103,6 +1103,15 @@ def merge_existing_data(name, df, existing_data):
             # append only new rows
             df = pd.concat([old_df, df], ignore_index=True)
 
+            # IMPORTANT: normalize Date column
+            df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
+
+            # remove duplicates again (safety)
+            df = df.drop_duplicates(subset=["Booking Id", "Date"])
+
+            # sort properly
+            df = df.sort_values("Date").reset_index(drop=True)
+
     return df
 
 
