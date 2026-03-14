@@ -909,7 +909,7 @@ async def main():
     existing_last_date, existing_data = load_existing_report()
 
     if existing_last_date:
-        TF = (existing_last_date + timedelta(days=1)).strftime("%Y-%m-%d")
+        TF = TT
         print("📈 Incremental run from:", TF)
     else:
         TF = target_date.replace(day=1).strftime("%Y-%m-%d")
