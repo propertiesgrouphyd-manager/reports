@@ -1232,6 +1232,7 @@ async def main():
                 df = merge_existing_data(name, df, existing_data)
 
                 property_dfs[name] = df
+                property_rooms[name] = total_rooms
                 
                
                 all_dfs.append(df)
