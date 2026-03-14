@@ -1078,7 +1078,7 @@ def merge_existing_data(name, df, existing_data):
             if "Rooms" in df.columns:
                 df["Rooms"] = pd.to_numeric(df["Rooms"], errors="coerce").fillna(0)
 
-df = df.sort_values("Date")
+            df = df.sort_values("Date")
 
     return df
 
