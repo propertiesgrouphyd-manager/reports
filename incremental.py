@@ -1223,12 +1223,18 @@ async def main():
             wb = Workbook()
             wb.remove(wb.active)
             all_dfs = []
+            property_dfs = {}
+            property_rooms = {}
 
             for name, df, total_rooms, inhouse, checkedout, upcoming, cancelled, prop_details, target_collect in valid_results:
 
                 df = merge_existing_data(name, df, existing_data)
 
+                property_dfs[name] = df
+                property_dfs[name] = df
+               
                 all_dfs.append(df)
+
                 ws = wb.create_sheet(name)
 
                 for r in dataframe_to_rows(df, index=False, header=True):
@@ -1299,7 +1305,7 @@ async def main():
                 add_property_details_box(ws, prop_details)
 
             # ================= CONSOLIDATED =================
-            big = pd.concat(all_dfs) if all_dfs else pd.DataFrame()
+            big = pd.concat(property_dfs.values()) if property_dfs else pd.DataFrame()
             ws = wb.create_sheet("CONSOLIDATED STATISTICS")
                         # ================= NEW: CONSOLIDATED TARGET COLLECTION =================
             consolidated_target_collect = {"cash": 0.0, "qr": 0.0, "online": 0.0}
@@ -1405,7 +1411,7 @@ async def main():
 
             tot_cash = tot_qr = tot_online = tot_disc = tot_bal = tot_amt = 0
 
-            for name, df_prop, *_ in valid_results:
+            for name, df_prop in property_dfs.items():
                 cash = round(df_prop["Cash"].sum(), 2)
                 qr = round(df_prop["QR"].sum(), 2)
                 online = round(df_prop["Online"].sum(), 2)
@@ -1462,7 +1468,7 @@ async def main():
 
             col_totals = [0]*8
 
-            for name, df_prop, *_ in valid_results:
+            for name, df_prop in property_dfs.items():
                 vals = [
                     name,
                     count(df_prop,"OYO"),
@@ -1531,7 +1537,9 @@ async def main():
             r = start_row + 2
 
             # Each property score + revenue loss
-            for name, df_prop, total_rooms_prop, *_ in valid_results:
+            for name, df_prop in property_dfs.items():
+
+                total_rooms_prop = property_rooms.get(name, 0)
                 booked_rooms_prop = int(df_prop["Rooms"].sum()) if not df_prop.empty else 0
                 total_rooms_effective = (total_rooms_prop * target_days) if total_rooms_prop else 0
                 available_rooms_prop = total_rooms_effective - booked_rooms_prop
@@ -1573,7 +1581,7 @@ async def main():
 
             
                         # ================= NEW: CONSOLIDATED PAYMENT TABLES =================
-            grand_rooms = sum(r[2] for r in valid_results)
+            grand_rooms = sum(property_rooms.values())
 
             add_payment_tables(ws, big, consolidated_target_collect, grand_rooms, title_prefix="CONSOLIDATED — ")
 
