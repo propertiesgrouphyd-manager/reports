@@ -1013,6 +1013,7 @@ def load_existing_report():
     Reads existing Excel report and returns:
     last_date, existing dataframes by sheet
     """
+
     if not os.path.exists(REPORT_FILE):
         return None, {}
 
@@ -1024,6 +1025,8 @@ def load_existing_report():
     wb = load_workbook(REPORT_FILE, data_only=True)
 
     for sheet in wb.sheetnames:
+
+        # skip consolidated sheet
         if sheet == "CONSOLIDATED STATISTICS":
             continue
 
@@ -1038,18 +1041,52 @@ def load_existing_report():
 
         df = pd.DataFrame(data, columns=headers)
 
+        # ---------------- KEEP ONLY BOOKING ROWS ----------------
         if "Booking Id" in df.columns:
-            df = df[df["Booking Id"].notna()]
 
+            df = df[df["Booking Id"].notna()]
+            df = df[df["Booking Id"].astype(str).str.strip() != ""]
+
+            # remove summary/stat rows accidentally read
+            df = df[
+                ~df["Booking Id"].astype(str).str.contains(
+                    "Total|Amount|ARR|Occupancy", case=False, na=False
+                )
+            ]
+
+        # ---------------- CLEAN DATE COLUMN ----------------
         if "Date" in df.columns:
-            df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+
+            df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
             df = df[df["Date"].notna()]
 
             if not df.empty:
-                sheet_last = df["Date"].max().date()
+                sheet_last = df["Date"].max()
 
                 if last_date is None or sheet_last > last_date:
                     last_date = sheet_last
+
+        # ---------------- CLEAN NUMERIC COLUMNS ----------------
+        if "Rooms" in df.columns:
+            df["Rooms"] = pd.to_numeric(df["Rooms"], errors="coerce").fillna(0)
+
+        if "Amount" in df.columns:
+            df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce").fillna(0)
+
+        if "Cash" in df.columns:
+            df["Cash"] = pd.to_numeric(df["Cash"], errors="coerce").fillna(0)
+
+        if "QR" in df.columns:
+            df["QR"] = pd.to_numeric(df["QR"], errors="coerce").fillna(0)
+
+        if "Online" in df.columns:
+            df["Online"] = pd.to_numeric(df["Online"], errors="coerce").fillna(0)
+
+        if "Discount" in df.columns:
+            df["Discount"] = pd.to_numeric(df["Discount"], errors="coerce").fillna(0)
+
+        if "Balance" in df.columns:
+            df["Balance"] = pd.to_numeric(df["Balance"], errors="coerce").fillna(0)
 
         existing_data[sheet] = df
 
@@ -1066,18 +1103,20 @@ def merge_existing_data(name, df, existing_data):
         old_df = existing_data[name]
 
         if old_df is not None and not old_df.empty:
-            df = pd.concat([old_df, df], ignore_index=True)
 
-            # ensure Date column consistent and remove time
+            # ensure same types
             df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
-            df = df[df["Date"].notna()]
-
-            df = df.drop_duplicates(subset=["Booking Id","Date"], keep="last")
+            old_df["Date"] = pd.to_datetime(old_df["Date"], errors="coerce").dt.date
 
             if "Rooms" in df.columns:
                 df["Rooms"] = pd.to_numeric(df["Rooms"], errors="coerce").fillna(0)
 
-            df = df.sort_values(["Date","Booking Id"])
+            # remove rows that already exist
+            existing_keys = set(zip(old_df["Booking Id"], old_df["Date"]))
+            df = df[~df.apply(lambda r: (r["Booking Id"], r["Date"]) in existing_keys, axis=1)]
+
+            # append only new rows
+            df = pd.concat([old_df, df], ignore_index=True)
 
     return df
 
