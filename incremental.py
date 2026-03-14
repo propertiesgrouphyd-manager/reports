@@ -1067,6 +1067,11 @@ def merge_existing_data(name, df, existing_data):
 
         if old_df is not None and not old_df.empty:
             df = pd.concat([old_df, df], ignore_index=True)
+
+            # ensure Date column consistent
+            df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+            df = df[df["Date"].notna()]
+
             df = df.drop_duplicates(subset=["Booking Id", "Date"], keep="last")
             df = df.sort_values("Date")
 
