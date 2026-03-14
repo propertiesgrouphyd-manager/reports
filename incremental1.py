@@ -790,6 +790,11 @@ async def run_property_limited(P, TF, TT, HF, HT):
 from openpyxl import load_workbook
 
 def load_existing_report():
+    """
+    Reads existing Excel report and returns:
+    last_date, existing dataframes by sheet
+    """
+
     if not os.path.exists(REPORT_FILE):
         return None, {}
 
@@ -801,6 +806,7 @@ def load_existing_report():
     wb = load_workbook(REPORT_FILE, data_only=True)
 
     for sheet in wb.sheetnames:
+
         if sheet == "CONSOLIDATED STATISTICS":
             continue
 
@@ -810,22 +816,46 @@ def load_existing_report():
         if len(rows) < 2:
             continue
 
-        headers = rows[0]
-        data = rows[1:]
+        headers = list(rows[0])
 
-        df = pd.DataFrame(data, columns=headers)
+        if "Booking Id" not in headers:
+            continue
 
-        if "Booking Id" in df.columns:
-            df = df[df["Booking Id"].notna()]
+        booking_id_index = headers.index("Booking Id")
 
+        booking_rows = []
+
+        # read ONLY booking rows
+        for r in rows[1:]:
+
+            booking_id = r[booking_id_index]
+
+            # stop when booking section ends
+            if booking_id is None or str(booking_id).strip() == "":
+                break
+
+            booking_rows.append(r)
+
+        if not booking_rows:
+            continue
+
+        df = pd.DataFrame(booking_rows, columns=headers)
+
+        # normalize date
         if "Date" in df.columns:
+            df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
             df = df[df["Date"].notna()]
+
             if not df.empty:
-                df["Date"] = pd.to_datetime(df["Date"])
-                sheet_last = df["Date"].max().date()
+                sheet_last = df["Date"].max()
 
                 if last_date is None or sheet_last > last_date:
                     last_date = sheet_last
+
+        # numeric cleanup
+        for col in ["Cash", "QR", "Online", "Discount", "Total Paid"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
         existing_data[sheet] = df
 
@@ -836,17 +866,30 @@ def load_existing_report():
 
 def merge_existing_data(name, df, existing_data):
 
+    # normalize date
+    if "Date" in df.columns:
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
+
     if name in existing_data:
 
         old_df = existing_data[name]
 
         if old_df is not None and not old_df.empty:
+
+            old_df["Date"] = pd.to_datetime(old_df["Date"], errors="coerce").dt.date
+
+            existing_keys = set(zip(old_df["Booking Id"], old_df["Date"]))
+
+            df = df[
+                ~df.apply(
+                    lambda r: (r["Booking Id"], r["Date"]) in existing_keys,
+                    axis=1
+                )
+            ]
+
             df = pd.concat([old_df, df], ignore_index=True)
-            df = df.drop_duplicates(subset=["Booking Id", "Date"], keep="last")
-            df = df.sort_values(["Date", "Booking Id"])
 
     return df
-
 
 
 
@@ -949,19 +992,24 @@ async def main():
         all_dfs.append(df)
 
         # consolidate daily collection (INCLUDING DISCOUNT)
-        for dkey, vals in (daily_collect or {}).items():
-            if dkey not in consolidated_daily_collect:
-                consolidated_daily_collect[dkey] = {
-                    "cash": 0.0,
-                    "qr": 0.0,
-                    "online": 0.0,
-                    "discount": 0.0
-                }
+        if not df.empty:
 
-            consolidated_daily_collect[dkey]["cash"] += float(vals.get("cash", 0) or 0)
-            consolidated_daily_collect[dkey]["qr"] += float(vals.get("qr", 0) or 0)
-            consolidated_daily_collect[dkey]["online"] += float(vals.get("online", 0) or 0)
-            consolidated_daily_collect[dkey]["discount"] += float(vals.get("discount", 0) or 0)
+            for _, row in df.iterrows():
+
+                dkey = str(row["Date"])
+
+                if dkey not in consolidated_daily_collect:
+                    consolidated_daily_collect[dkey] = {
+                        "cash": 0.0,
+                        "qr": 0.0,
+                        "online": 0.0,
+                        "discount": 0.0
+                    }
+
+                consolidated_daily_collect[dkey]["cash"] += float(row.get("Cash", 0) or 0)
+                consolidated_daily_collect[dkey]["qr"] += float(row.get("QR", 0) or 0)
+                consolidated_daily_collect[dkey]["online"] += float(row.get("Online", 0) or 0)
+               consolidated_daily_collect[dkey]["discount"] += float(row.get("Discount", 0) or 0)
 
         ws = wb.create_sheet(name)
 
@@ -976,7 +1024,7 @@ async def main():
         add_property_details_box(ws, prop_details)
 
     # ================= CONSOLIDATED SHEET =================
-    big = pd.concat(all_dfs) if all_dfs else pd.DataFrame(columns=[
+    big = pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame(columns=[
         "Date", "Booking Id", "Guest Name", "Status", "Booking Source",
         "Check In", "Check Out",
         "Cash", "QR", "Online", "Discount", "Total Paid", "Time"
