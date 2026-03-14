@@ -20,7 +20,7 @@ import pytz
 IST = pytz.timezone("Asia/Kolkata")
 now = datetime.now(IST)
 
-REPORT_FILE = "Collection_March 2026.xlsx"
+REPORT_FILE = "Collection_March2026.xlsx"
 
 MAX_FULL_RUN_RETRIES = 5
 FULL_RUN_RETRY_DELAY = 10
