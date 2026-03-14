@@ -1073,7 +1073,12 @@ def merge_existing_data(name, df, existing_data):
             df = df[df["Date"].notna()]
 
             df = df.drop_duplicates(subset=["Booking Id", "Date"], keep="last")
-            df = df.sort_values("Date")
+
+            # ensure numeric columns stay numeric after merge
+            if "Rooms" in df.columns:
+                df["Rooms"] = pd.to_numeric(df["Rooms"], errors="coerce").fillna(0)
+
+df = df.sort_values("Date")
 
     return df
 
