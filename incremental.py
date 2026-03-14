@@ -1026,7 +1026,6 @@ def load_existing_report():
 
     for sheet in wb.sheetnames:
 
-        # skip consolidated sheet
         if sheet == "CONSOLIDATED STATISTICS":
             continue
 
@@ -1036,27 +1035,33 @@ def load_existing_report():
         if len(rows) < 2:
             continue
 
-        headers = rows[0]
-        data = rows[1:]
+        headers = list(rows[0])
 
-        df = pd.DataFrame(data, columns=headers)
+        if "Booking Id" not in headers:
+            continue
 
-        # ---------------- KEEP ONLY BOOKING ROWS ----------------
-        if "Booking Id" in df.columns:
+        booking_id_index = headers.index("Booking Id")
 
-            df = df[df["Booking Id"].notna()]
-            df = df[df["Booking Id"].astype(str).str.strip() != ""]
+        booking_rows = []
 
-            # remove summary/stat rows accidentally read
-            df = df[
-                ~df["Booking Id"].astype(str).str.contains(
-                    "Total|Amount|ARR|Occupancy", case=False, na=False
-                )
-            ]
+        # -------- READ ONLY BOOKING SECTION --------
+        for r in rows[1:]:
 
-        # ---------------- CLEAN DATE COLUMN ----------------
+            booking_id = r[booking_id_index]
+
+            # stop reading when booking section ends
+            if booking_id is None or str(booking_id).strip() == "":
+                break
+
+            booking_rows.append(r)
+
+        if not booking_rows:
+            continue
+
+        df = pd.DataFrame(booking_rows, columns=headers)
+
+        # -------- CLEAN DATE COLUMN --------
         if "Date" in df.columns:
-
             df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
             df = df[df["Date"].notna()]
 
@@ -1066,27 +1071,10 @@ def load_existing_report():
                 if last_date is None or sheet_last > last_date:
                     last_date = sheet_last
 
-        # ---------------- CLEAN NUMERIC COLUMNS ----------------
-        if "Rooms" in df.columns:
-            df["Rooms"] = pd.to_numeric(df["Rooms"], errors="coerce").fillna(0)
-
-        if "Amount" in df.columns:
-            df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce").fillna(0)
-
-        if "Cash" in df.columns:
-            df["Cash"] = pd.to_numeric(df["Cash"], errors="coerce").fillna(0)
-
-        if "QR" in df.columns:
-            df["QR"] = pd.to_numeric(df["QR"], errors="coerce").fillna(0)
-
-        if "Online" in df.columns:
-            df["Online"] = pd.to_numeric(df["Online"], errors="coerce").fillna(0)
-
-        if "Discount" in df.columns:
-            df["Discount"] = pd.to_numeric(df["Discount"], errors="coerce").fillna(0)
-
-        if "Balance" in df.columns:
-            df["Balance"] = pd.to_numeric(df["Balance"], errors="coerce").fillna(0)
+        # -------- CLEAN NUMERIC COLUMNS --------
+        for col in ["Rooms","Amount","Cash","QR","Online","Discount","Balance"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
         existing_data[sheet] = df
 
