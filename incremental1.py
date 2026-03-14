@@ -1022,7 +1022,7 @@ async def main():
         ws.append([])
         month_start = target_date.replace(day=1).strftime("%Y-%m-%d")
 
-        add_payment_tables(ws, df, property_daily_collect, month_start, TT)
+        add_payment_tables(ws, df, daily_collect, month_start, TT)
         add_property_details_box(ws, prop_details)
 
     # ================= CONSOLIDATED SHEET =================
