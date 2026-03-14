@@ -1035,8 +1035,9 @@ def load_existing_report():
         if len(rows) < 2:
             continue
 
-        headers = list(rows[0])
+        headers = rows[0]
 
+        # detect column positions
         if "Booking Id" not in headers:
             continue
 
@@ -1044,12 +1045,11 @@ def load_existing_report():
 
         booking_rows = []
 
-        # -------- READ ONLY BOOKING SECTION --------
+        # read only booking section
         for r in rows[1:]:
 
             booking_id = r[booking_id_index]
 
-            # stop reading when booking section ends
             if booking_id is None or str(booking_id).strip() == "":
                 break
 
@@ -1060,7 +1060,6 @@ def load_existing_report():
 
         df = pd.DataFrame(booking_rows, columns=headers)
 
-        # -------- CLEAN DATE COLUMN --------
         if "Date" in df.columns:
             df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
             df = df[df["Date"].notna()]
@@ -1071,7 +1070,6 @@ def load_existing_report():
                 if last_date is None or sheet_last > last_date:
                     last_date = sheet_last
 
-        # -------- CLEAN NUMERIC COLUMNS --------
         for col in ["Rooms","Amount","Cash","QR","Online","Discount","Balance"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
@@ -1079,7 +1077,6 @@ def load_existing_report():
         existing_data[sheet] = df
 
     return last_date, existing_data
-
 
 
 
