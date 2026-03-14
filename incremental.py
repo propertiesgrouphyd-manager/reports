@@ -1042,10 +1042,10 @@ def load_existing_report():
             df = df[df["Booking Id"].notna()]
 
         if "Date" in df.columns:
+            df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
             df = df[df["Date"].notna()]
 
             if not df.empty:
-                df["Date"] = pd.to_datetime(df["Date"])
                 sheet_last = df["Date"].max().date()
 
                 if last_date is None or sheet_last > last_date:
