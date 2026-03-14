@@ -907,6 +907,8 @@ async def main():
 
     # ================= CURRENT MONTH TO YESTERDAY =================
     existing_last_date, existing_data = load_existing_report()
+   
+    TT = target_date.strftime("%Y-%m-%d")
 
     if existing_last_date:
         TF = TT
