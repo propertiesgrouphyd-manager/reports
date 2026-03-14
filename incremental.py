@@ -1083,24 +1083,25 @@ def load_existing_report():
 
 def merge_existing_data(name, df, existing_data):
 
+    # normalize date always
+    if "Date" in df.columns:
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
+
+    if "Rooms" in df.columns:
+        df["Rooms"] = pd.to_numeric(df["Rooms"], errors="coerce").fillna(0)
+
     if name in existing_data:
 
         old_df = existing_data[name]
 
         if old_df is not None and not old_df.empty:
 
-            # ensure same types
-            df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
             old_df["Date"] = pd.to_datetime(old_df["Date"], errors="coerce").dt.date
 
-            if "Rooms" in df.columns:
-                df["Rooms"] = pd.to_numeric(df["Rooms"], errors="coerce").fillna(0)
-
-            # remove rows that already exist
             existing_keys = set(zip(old_df["Booking Id"], old_df["Date"]))
+
             df = df[~df.apply(lambda r: (r["Booking Id"], r["Date"]) in existing_keys, axis=1)]
 
-            # append only new rows
             df = pd.concat([old_df, df], ignore_index=True)
 
     return df
@@ -1231,7 +1232,7 @@ async def main():
                 df = merge_existing_data(name, df, existing_data)
 
                 property_dfs[name] = df
-                property_dfs[name] = df
+                
                
                 all_dfs.append(df)
 
