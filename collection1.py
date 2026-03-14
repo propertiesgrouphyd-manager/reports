@@ -1,4 +1,3 @@
-
 # ==============================
 # ULTRA FAST ASYNC MULTI PROPERTY AUTOMATION
 # DATE-WISE COLLECTION BASED ON PAYMENT CREATED_AT
@@ -12,9 +11,16 @@ import aiohttp
 import pandas as pd
 from datetime import datetime, timedelta
 import traceback
+from openpyxl import Workbook
+from openpyxl.utils.dataframe import dataframe_to_rows
+from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
+from io import BytesIO
 import pytz
 IST = pytz.timezone("Asia/Kolkata")
 now = datetime.now(IST)
+
+REPORT_FILE = "Collection_Report.xlsx"
 
 MAX_FULL_RUN_RETRIES = 5
 FULL_RUN_RETRY_DELAY = 10
@@ -27,7 +33,6 @@ prop_semaphore = asyncio.Semaphore(PROP_PARALLEL_LIMIT)
 DETAIL_TIMEOUT = 25
 ROOMS_TIMEOUT = 25
 BATCH_TIMEOUT = 35
-
 
 
 # ================= TELEGRAM =================
@@ -47,7 +52,7 @@ def get_chat_id(name: str):
 
 
 # choose chat key from secret map
-TELEGRAM_CHAT_ID = get_chat_id("collection")   # change if needed
+TELEGRAM_CHAT_ID = get_chat_id("6am")   # change if needed
 
 
 # ================= PROPERTIES =================
@@ -59,28 +64,85 @@ PROPERTIES = {int(k): v for k, v in PROPERTIES_RAW.items()}
 if not PROPERTIES:
     raise RuntimeError("❌ OYO_PROPERTIES secret missing or empty")
 
+# ================= TELEGRAM =================
+async def send_telegram_excel_buffer(buffer, filename, caption=None):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument"
 
-async def send_telegram_message(text, session):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    data = aiohttp.FormData()
+    data.add_field("chat_id", str(TELEGRAM_CHAT_ID))
+    if caption:
+        data.add_field("caption", caption)
 
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": text,
-        "parse_mode": "HTML"
-    }
+    data.add_field(
+        "document",
+        buffer,
+        filename=filename,
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
-    try:
-        async with session.post(url, json=payload, timeout=30) as resp:
-            response_text = await resp.text()
-
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, data=data, timeout=120) as resp:
             if resp.status != 200:
-                print("❌ TELEGRAM ERROR:", resp.status, response_text)
-                return
+                text = await resp.text()
+                raise RuntimeError(f"Telegram send failed: {text}")
 
-            print("✅ Telegram sent")
+# ================= BEAUTIFY EXCEL =================
+def beautify(ws):
+    blue = PatternFill("solid", fgColor="1F4E78")
+    light1 = PatternFill("solid", fgColor="DDEBF7")
+    light2 = PatternFill("solid", fgColor="F2F2F2")
+    yellow = PatternFill("solid", fgColor="FFF4CC")
 
-    except Exception as e:
-        print("❌ TELEGRAM EXCEPTION:", e)
+    bold_white = Font(color="FFFFFF", bold=True, size=12)
+    bold_black = Font(color="000000", bold=True, size=12)
+
+    thin = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+
+    max_row = ws.max_row
+    max_col = ws.max_column
+    ws.freeze_panes = "A2"
+
+    for col in range(1, max_col + 1):
+        c = ws.cell(row=1, column=col)
+        c.fill = blue
+        c.font = bold_white
+        c.alignment = Alignment(horizontal="center", vertical="center")
+        c.border = thin
+
+    for r in range(2, max_row + 1):
+        fill = light1 if r % 2 == 0 else light2
+        for c in range(1, max_col + 1):
+            cell = ws.cell(row=r, column=c)
+            if cell.value is None:
+                continue
+
+            if cell.fill is not None and cell.fill.patternType is not None:
+                cell.border = thin
+                continue
+
+            cell.fill = fill
+            cell.border = thin
+
+    for col in ws.columns:
+        max_length = 0
+        col_letter = get_column_letter(col[0].column)
+        for cell in col:
+            if cell.value:
+                max_length = max(max_length, len(str(cell.value)))
+        ws.column_dimensions[col_letter].width = max_length + 5
+
+    for r in range(2, max_row + 1):
+        text = str(ws.cell(row=r, column=1).value or "")
+        if text.strip() == "":
+            continue
+        if "Booking" in text or "Amount" in text or "Total" in text or "OYO" in text:
+            ws.cell(row=r, column=1).fill = yellow
+            ws.cell(row=r, column=1).font = bold_black
 
 # ================= BOOKING SOURCE =================
 def get_booking_source(b):
@@ -108,6 +170,279 @@ def get_booking_source(b):
         return "OYO"
     return "OBA"
 
+# ================= PREMIUM PROPERTY DETAILS BOX =================
+def add_property_details_box(ws, prop):
+    blue = PatternFill("solid", fgColor="1F4E78")
+    light = PatternFill("solid", fgColor="DDEBF7")
+    white = PatternFill("solid", fgColor="FFFFFF")
+
+    bold_white = Font(color="FFFFFF", bold=True, size=12)
+    bold_black = Font(color="000000", bold=True, size=11)
+    normal = Font(color="000000", size=11)
+    link_font = Font(color="0563C1", underline="single", bold=True, size=11)
+
+    thin = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+
+    start_col = 1
+    end_col = 8
+
+    def _border_range(r1, c1, r2, c2):
+        for rr in range(r1, r2 + 1):
+            for cc in range(c1, c2 + 1):
+                ws.cell(row=rr, column=cc).border = thin
+
+    def _merge(row, c1, c2, value, fill=None, font=None, center=False, wrap=False):
+        ws.merge_cells(start_row=row, start_column=c1, end_row=row, end_column=c2)
+        cell = ws.cell(row=row, column=c1)
+        cell.value = value
+        if fill: cell.fill = fill
+        if font: cell.font = font
+        cell.alignment = Alignment(horizontal="center" if center else "left",
+                                   vertical="center", wrap_text=wrap)
+        return cell
+
+    plot = (prop.get("plot_number") or "").strip()
+    street = (prop.get("street") or "").strip()
+    pincode = (prop.get("pincode") or "").strip()
+    city = (prop.get("city") or "").strip()
+    country = (prop.get("country") or "").strip()
+
+    address_parts = []
+    if plot: address_parts.append(plot)
+    if street: address_parts.append(street)
+    city_pin = " ".join([x for x in [city, pincode] if x]).strip()
+    if city_pin: address_parts.append(city_pin)
+    if country: address_parts.append(country)
+    address = ", ".join(address_parts).strip()
+
+    ws.append([])
+    ws.append([])
+    top = ws.max_row + 1
+
+    _merge(top, start_col, end_col, "PROPERTY DETAILS", fill=blue, font=bold_white, center=True)
+    ws.row_dimensions[top].height = 22
+
+    _merge(top + 1, 1, 2, "Name", fill=light, font=bold_black, wrap=True)
+    _merge(top + 1, 3, end_col, prop.get("name", "") or "", fill=white, font=normal, wrap=True)
+
+    _merge(top + 2, 1, 2, "Alternative Name", fill=light, font=bold_black, wrap=True)
+    _merge(top + 2, 3, end_col, prop.get("alternate_name", "") or "", fill=white, font=normal, wrap=True)
+
+    _merge(top + 3, 1, 2, "Address", fill=light, font=bold_black, wrap=True)
+    _merge(top + 3, 3, end_col, address, fill=white, font=normal, wrap=True)
+    ws.row_dimensions[top + 3].height = 45
+
+    _merge(top + 4, 1, 2, "Google Map", fill=light, font=bold_black, wrap=True)
+    map_link = (prop.get("map_link") or "").strip() or ""
+    link_cell = _merge(top + 4, 3, end_col,
+                       "OPEN IN GOOGLE MAPS" if map_link else "",
+                       fill=white, font=link_font, center=True)
+    if map_link:
+        link_cell.hyperlink = map_link
+
+    _border_range(top, start_col, top + 4, end_col)
+
+# ================= PREMIUM PAYMENT TABLES =================
+# ================= PREMIUM PAYMENT TABLES =================
+def add_payment_tables(ws, df, daily_collect, TF, TT, title_prefix=""):
+    blue = PatternFill("solid", fgColor="1F4E78")
+    light = PatternFill("solid", fgColor="DDEBF7")
+    white = PatternFill("solid", fgColor="FFFFFF")
+    yellow = PatternFill("solid", fgColor="FFF4CC")
+
+    bold_white = Font(color="FFFFFF", bold=True, size=12)
+    bold_black = Font(color="000000", bold=True, size=11)
+    normal = Font(color="000000", size=11)
+
+    thin = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+
+    def _style_row(row, start_col, end_col, fill=None, font=None, center=True):
+        for c in range(start_col, end_col + 1):
+            cell = ws.cell(row=row, column=c)
+            if fill: cell.fill = fill
+            if font: cell.font = font
+            cell.border = thin
+            cell.alignment = Alignment(horizontal="center" if center else "left",
+                                       vertical="center")
+
+    def _merge(row, c1, c2, value, fill=None, font=None, center=True):
+        ws.merge_cells(start_row=row, start_column=c1, end_row=row, end_column=c2)
+        cell = ws.cell(row=row, column=c1)
+        cell.value = value
+        if fill: cell.fill = fill
+        if font: cell.font = font
+        cell.border = thin
+        cell.alignment = Alignment(horizontal="center" if center else "left",
+                                   vertical="center")
+        return cell
+
+    start_col = 1
+    end_col = 7
+
+    premium_widths = [18, 14, 14, 14, 14, 14, 16]
+    for i, w in enumerate(premium_widths, start=1):
+        col_letter = get_column_letter(i)
+        current = ws.column_dimensions[col_letter].width
+        ws.column_dimensions[col_letter].width = max(current or 0, w)
+
+    ws.append([])
+
+    # ================= TABLE 1 =================
+    top = ws.max_row + 1
+    heading = f"{title_prefix}BOOKING SOURCE × PAYMENT MODE".strip()
+    _merge(top, start_col, end_col, heading, fill=blue, font=bold_white, center=True)
+
+    headers = ["Source", "Cash", "QR", "Online", "Discount", "Total Paid", ""]
+    for idx, h in enumerate(headers, start=1):
+        ws.cell(row=top + 1, column=idx).value = h
+    _style_row(top + 1, start_col, end_col, fill=light, font=bold_black)
+
+    sources = ["OYO", "Walk-in", "MMT", "BDC", "Agoda", "CB", "TA", "OBA"]
+    r = top + 2
+
+    for src in sources:
+        part = df[df["Booking Source"] == src] if (not df.empty and "Booking Source" in df.columns) else df
+
+        cash = round(float(part["Cash"].sum()), 2) if (not part.empty and "Cash" in part.columns) else 0
+        qr = round(float(part["QR"].sum()), 2) if (not part.empty and "QR" in part.columns) else 0
+        online = round(float(part["Online"].sum()), 2) if (not part.empty and "Online" in part.columns) else 0
+        discount = round(float(part["Discount"].sum()), 2) if (not part.empty and "Discount" in part.columns) else 0
+
+        total_paid = round(cash + qr + online + discount, 2)
+
+        ws.cell(row=r, column=1).value = src
+        ws.cell(row=r, column=2).value = cash
+        ws.cell(row=r, column=3).value = qr
+        ws.cell(row=r, column=4).value = online
+        ws.cell(row=r, column=5).value = discount
+        ws.cell(row=r, column=6).value = total_paid
+
+        for c in range(start_col, end_col + 1):
+            cell = ws.cell(row=r, column=c)
+            cell.border = thin
+            cell.font = normal
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.fill = white
+
+        ws.cell(row=r, column=1).fill = yellow
+        ws.cell(row=r, column=1).font = bold_black
+        r += 1
+
+    # TOTAL row
+    tot_cash = round(float(df["Cash"].sum()), 2) if not df.empty else 0
+    tot_qr = round(float(df["QR"].sum()), 2) if not df.empty else 0
+    tot_online = round(float(df["Online"].sum()), 2) if not df.empty else 0
+    tot_discount = round(float(df["Discount"].sum()), 2) if not df.empty else 0
+    tot_paid = round(tot_cash + tot_qr + tot_online + tot_discount, 2)
+
+    ws.cell(row=r, column=1).value = "TOTAL"
+    ws.cell(row=r, column=2).value = tot_cash
+    ws.cell(row=r, column=3).value = tot_qr
+    ws.cell(row=r, column=4).value = tot_online
+    ws.cell(row=r, column=5).value = tot_discount
+    ws.cell(row=r, column=6).value = tot_paid
+
+    for c in range(start_col, end_col + 1):
+        cell = ws.cell(row=r, column=c)
+        cell.border = thin
+        cell.font = bold_black
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.fill = light
+
+    ws.cell(row=r, column=1).fill = yellow
+    ws.cell(row=r, column=1).font = bold_black
+
+    ws.append([])
+
+    # ================= TABLE 2 =================
+    top2 = ws.max_row + 1
+    heading2 = f"{title_prefix}DATE WISE COLLECTION SUMMARY".strip()
+    _merge(top2, start_col, end_col, heading2, fill=blue, font=bold_white, center=True)
+
+    headers2 = ["Date", "Cash", "QR", "Online", "Discount", "Total Paid", ""]
+    for idx, h in enumerate(headers2, start=1):
+        ws.cell(row=top2 + 1, column=idx).value = h
+    _style_row(top2 + 1, start_col, end_col, fill=light, font=bold_black)
+
+    rr = top2 + 2
+    tf_dt = datetime.strptime(TF, "%Y-%m-%d").date()
+    tt_dt = datetime.strptime(TT, "%Y-%m-%d").date()
+
+    grand_cash = grand_qr = grand_online = grand_discount = 0.0
+
+    cur = tf_dt
+    while cur <= tt_dt:
+        dkey = cur.strftime("%Y-%m-%d")
+        vals = daily_collect.get(dkey, {
+            "cash": 0.0,
+            "qr": 0.0,
+            "online": 0.0,
+            "discount": 0.0
+        })
+
+        cash = round(float(vals.get("cash", 0)), 2)
+        qr = round(float(vals.get("qr", 0)), 2)
+        online = round(float(vals.get("online", 0)), 2)
+        discount = round(float(vals.get("discount", 0)), 2)
+
+        total_paid = round(cash + qr + online + discount, 2)
+
+        ws.cell(row=rr, column=1).value = dkey
+        ws.cell(row=rr, column=2).value = cash
+        ws.cell(row=rr, column=3).value = qr
+        ws.cell(row=rr, column=4).value = online
+        ws.cell(row=rr, column=5).value = discount
+        ws.cell(row=rr, column=6).value = total_paid
+
+        for c in range(start_col, end_col + 1):
+            cell = ws.cell(row=rr, column=c)
+            cell.border = thin
+            cell.font = normal
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.fill = white
+
+        ws.cell(row=rr, column=1).fill = yellow
+        ws.cell(row=rr, column=1).font = bold_black
+
+        grand_cash += cash
+        grand_qr += qr
+        grand_online += online
+        grand_discount += discount
+
+        rr += 1
+        cur += timedelta(days=1)
+
+    grand_total = round(grand_cash + grand_qr + grand_online + grand_discount, 2)
+
+    ws.cell(row=rr, column=1).value = "TOTAL"
+    ws.cell(row=rr, column=2).value = round(grand_cash, 2)
+    ws.cell(row=rr, column=3).value = round(grand_qr, 2)
+    ws.cell(row=rr, column=4).value = round(grand_online, 2)
+    ws.cell(row=rr, column=5).value = round(grand_discount, 2)
+    ws.cell(row=rr, column=6).value = grand_total
+
+    for c in range(start_col, end_col + 1):
+        cell = ws.cell(row=rr, column=c)
+        cell.border = thin
+        cell.font = bold_black
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.fill = light
+
+    ws.cell(row=rr, column=1).fill = yellow
+    ws.cell(row=rr, column=1).font = bold_black
+
+    ws.append([])
+# ================= FETCH DETAILS =================
 # ================= FETCH DETAILS =================
 async def fetch_booking_details(session, P, booking_no):
     url = "https://www.oyoos.com/hms_ms/api/v1/visibility/booking_details_with_entities"
@@ -135,28 +470,26 @@ async def fetch_booking_details(session, P, booking_no):
                 cookies=cookies,
                 timeout=DETAIL_TIMEOUT
             ) as r:
-
                 if r.status != 200:
                     raise RuntimeError("DETAIL API FAILED")
 
                 data = await r.json()
-
                 booking = next(
                     iter(data.get("entities", {}).get("bookings", {}).values()),
                     {}
                 )
-
                 payments = booking.get("payments", [])
+
                 payment_events = []
 
                 for p in payments:
-
                     mode = p.get("mode", "")
                     amt = float(p.get("amount", 0) or 0)
 
-                    # 🔥 Skip zero payments
+                    # 🔥 SKIP ZERO AMOUNT ENTRIES
                     if amt <= 0:
                         continue
+
 
                     created_at = str(p.get("created_at") or "").strip()
                     if not created_at:
@@ -169,6 +502,7 @@ async def fetch_booking_details(session, P, booking_no):
                         continue
 
                     pay_date = dt.strftime("%Y-%m-%d")
+                    pay_time = dt.strftime("%H:%M")
 
                     # ================= CLASSIFICATION =================
                     if mode == "Cash at Hotel":
@@ -182,6 +516,7 @@ async def fetch_booking_details(session, P, booking_no):
 
                     payment_events.append({
                         "date": pay_date,
+                        "time": pay_time,
                         "mode": bucket,
                         "amt": amt
                     })
@@ -192,6 +527,8 @@ async def fetch_booking_details(session, P, booking_no):
             await asyncio.sleep(2 + attempt)
 
     raise RuntimeError("DETAIL FETCH FAILED")
+
+
 # ================= BATCH FETCH =================
 async def fetch_bookings_batch(session, offset, f, t, P):
     url = "https://www.oyoos.com/hms_ms/api/v1/get_booking_with_ids"
@@ -220,8 +557,33 @@ async def fetch_bookings_batch(session, offset, f, t, P):
             raise RuntimeError("BATCH API FAILED")
         return await r.json()
 
+# ================= PROPERTY DETAILS API =================
+async def fetch_property_details(session, P):
+    url = "https://www.oyoos.com/hms_ms/api/v1/location/property-details"
+    params = {"qid": P["QID"]}
+    cookies = {"uif": P["UIF"], "uuid": P["UUID"]}
+    headers = {"accept": "application/json", "x-qid": str(P["QID"]), "x-source-client": "merchant"}
 
+    for attempt in range(1, 4):
+        try:
+            async with session.get(url, params=params, cookies=cookies, headers=headers, timeout=20) as r:
+                if r.status != 200:
+                    raise RuntimeError(f"PROPERTY DETAILS API FAILED ({r.status})")
+                data = await r.json()
+                return {
+                    "name": str(data.get("name", "") or "").strip(),
+                    "alternate_name": str(data.get("alternate_name", "") or "").strip(),
+                    "plot_number": str(data.get("plot_number", "") or "").strip(),
+                    "street": str(data.get("street", "") or "").strip(),
+                    "pincode": str(data.get("pincode", "") or "").strip(),
+                    "city": str(data.get("city", "") or "").strip(),
+                    "country": str(data.get("country", "") or "").strip(),
+                    "map_link": str(data.get("map_link", "") or "").strip(),
+                }
+        except Exception:
+            await asyncio.sleep(2 + attempt)
 
+    return {"name":"","alternate_name":"","plot_number":"","street":"","pincode":"","city":"","country":"","map_link":""}
 
 # ================= FETCH TOTAL ROOMS =================
 async def fetch_total_rooms(session, P):
@@ -244,6 +606,7 @@ async def fetch_total_rooms(session, P):
     return 0
 
 # ================= PROCESS PROPERTY =================
+# ================= PROCESS PROPERTY =================
 async def process_property(P, TF, TT, HF, HT):
     print(f"PROCESSING → {P['name']}")
 
@@ -251,6 +614,8 @@ async def process_property(P, TF, TT, HF, HT):
     tt_dt = datetime.strptime(TT, "%Y-%m-%d").date()
 
     async with aiohttp.ClientSession() as session:
+        total_rooms = await fetch_total_rooms(session, P)
+        prop_details = await fetch_property_details(session, P)
 
         detail_semaphore = asyncio.Semaphore(DETAIL_PARALLEL_LIMIT)
         detail_cache = {}
@@ -263,6 +628,7 @@ async def process_property(P, TF, TT, HF, HT):
                 detail_cache[booking_no] = res
                 return res
 
+        daily_collect = {}
         booking_date_mode_map = {}
 
         offset = 0
@@ -313,26 +679,43 @@ async def process_property(P, TF, TT, HF, HT):
                     if not (tf_dt <= d_dt <= tt_dt):
                         continue
 
+                    if d not in daily_collect:
+                        daily_collect[d] = {
+                            "cash": 0.0,
+                            "qr": 0.0,
+                            "online": 0.0,
+                            "discount": 0.0
+                        }
+
                     if (d, booking_no) not in booking_date_mode_map:
                         booking_date_mode_map[(d, booking_no)] = {
                             "cash": 0.0,
                             "qr": 0.0,
                             "online": 0.0,
                             "discount": 0.0,
+                            "times": set(),
                             "b": b,
                             "source": source
                         }
 
                     mode = ev.get("mode")
                     amt = float(ev.get("amt", 0) or 0)
+                    ptime = ev.get("time")
+
+                    if ptime:
+                        booking_date_mode_map[(d, booking_no)]["times"].add(ptime)
 
                     if mode == "cash":
+                        daily_collect[d]["cash"] += amt
                         booking_date_mode_map[(d, booking_no)]["cash"] += amt
                     elif mode == "qr":
+                        daily_collect[d]["qr"] += amt
                         booking_date_mode_map[(d, booking_no)]["qr"] += amt
                     elif mode == "discount":
+                        daily_collect[d]["discount"] += amt
                         booking_date_mode_map[(d, booking_no)]["discount"] += amt
                     else:
+                        daily_collect[d]["online"] += amt
                         booking_date_mode_map[(d, booking_no)]["online"] += amt
 
             if len(data.get("bookingIds", [])) < 100:
@@ -351,6 +734,7 @@ async def process_property(P, TF, TT, HF, HT):
             discount = vals["discount"]
 
             total_paid = cash + qr + online + discount
+            times_str = ", ".join(sorted(vals["times"]))
 
             all_rows.append({
                 "Date": d,
@@ -364,7 +748,8 @@ async def process_property(P, TF, TT, HF, HT):
                 "QR": round(qr, 2),
                 "Online": round(online, 2),
                 "Discount": round(discount, 2),
-                "Total Paid": round(total_paid, 2)
+                "Total Paid": round(total_paid, 2),
+                "Time": times_str
             })
 
         df = pd.DataFrame(all_rows)
@@ -373,12 +758,14 @@ async def process_property(P, TF, TT, HF, HT):
             df = pd.DataFrame(columns=[
                 "Date", "Booking Id", "Guest Name", "Status",
                 "Booking Source", "Check In", "Check Out",
-                "Cash", "QR", "Online", "Discount", "Total Paid"
+                "Cash", "QR", "Online", "Discount",
+                "Total Paid", "Time"
             ])
 
         df = df.sort_values(["Date", "Booking Id"], ascending=True)
 
-        return (P["name"], df)
+        return (P["name"], df, total_rooms, prop_details, daily_collect)
+
 
 # ================= RETRY =================
 async def run_property_with_retry(P, TF, TT, HF, HT, retries=3):
@@ -398,37 +785,119 @@ async def run_property_limited(P, TF, TT, HF, HT):
 
 
 
-def build_daily_collection_message(
-    prop,
-    report_date,
-    total_guests,
-    total_amount,
-    cash,
-    qr,
-    online,
-    discount
-):
-    return f"""
-<pre>
-DAILY COLLECTION REPORT : {prop}
 
-🏢 Property Code     : {prop}
-📅 Date              : {report_date}
 
-🔹 Total Guests Paid : {total_guests}
+from openpyxl import load_workbook
 
-🔹 Total Amount      : ₹{total_amount:,.2f}
-🔹 Cash              : ₹{cash:,.2f}
-🔹 QR                : ₹{qr:,.2f}
-🔹 Online            : ₹{online:,.2f}
-🔹 Discount          : ₹{discount:,.2f}
+def load_existing_report():
+    """
+    Reads existing Excel report and returns:
+    last_date, existing dataframes by sheet
+    """
 
-</pre>
-""".strip()
+    if not os.path.exists(REPORT_FILE):
+        return None, {}
+
+    print("📂 Existing report found:", REPORT_FILE)
+
+    existing_data = {}
+    last_date = None
+
+    wb = load_workbook(REPORT_FILE, data_only=True)
+
+    for sheet in wb.sheetnames:
+
+        if sheet == "CONSOLIDATED STATISTICS":
+            continue
+
+        ws = wb[sheet]
+        rows = list(ws.values)
+
+        if len(rows) < 2:
+            continue
+
+        headers = list(rows[0])
+
+        if "Booking Id" not in headers:
+            continue
+
+        booking_id_index = headers.index("Booking Id")
+
+        booking_rows = []
+
+        # read ONLY booking rows
+        for r in rows[1:]:
+
+            booking_id = r[booking_id_index]
+
+            # stop when booking section ends
+            if booking_id is None or str(booking_id).strip() == "":
+                break
+
+            booking_rows.append(r)
+
+        if not booking_rows:
+            continue
+
+        df = pd.DataFrame(booking_rows, columns=headers)
+
+        # normalize date
+        if "Date" in df.columns:
+            df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
+            df = df[df["Date"].notna()]
+
+            if not df.empty:
+                sheet_last = df["Date"].max()
+
+                if last_date is None or sheet_last > last_date:
+                    last_date = sheet_last
+
+        # numeric cleanup
+        for col in ["Cash", "QR", "Online", "Discount", "Total Paid"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+        existing_data[sheet] = df
+
+    return last_date, existing_data
+
+
+
+
+def merge_existing_data(name, df, existing_data):
+
+    # normalize date
+    if "Date" in df.columns:
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
+
+    if name in existing_data:
+
+        old_df = existing_data[name]
+
+        if old_df is not None and not old_df.empty:
+
+            old_df["Date"] = pd.to_datetime(old_df["Date"], errors="coerce").dt.date
+
+            existing_keys = set(zip(old_df["Booking Id"], old_df["Date"]))
+
+            df = df[
+                ~df.apply(
+                    lambda r: (r["Booking Id"], r["Date"]) in existing_keys,
+                    axis=1
+                )
+            ]
+
+            df = pd.concat([old_df, df], ignore_index=True)
+
+    return df
+
+
+
+
 # ================= MAIN =================
 async def main():
     print("========================================")
-    print(" OYO DAILY COLLECTION TELEGRAM AUTOMATION")
+    print(" OYO MONTHLY TELEGRAM AUTOMATION")
     print("========================================")
 
     global now
@@ -436,19 +905,50 @@ async def main():
 
     target_date = (now - timedelta(days=1)).date()
 
+    # ================= CURRENT MONTH TO YESTERDAY =================
+    existing_last_date, existing_data = load_existing_report()
+   
+    TT = target_date.strftime("%Y-%m-%d")
 
-    TF = target_date.strftime("%Y-%m-%d")
-    TT = TF
+    if existing_last_date:
+        TF = TT
+        print("📈 Incremental run from:", TF)
+    else:
+        TF = target_date.replace(day=1).strftime("%Y-%m-%d")
+        print("🆕 Fresh month run")
 
+    TT = target_date.strftime("%Y-%m-%d")
+
+    if TF > TT:
+        print("✔ Report already up to date.")
+        return
+
+    # total days in range
+    month_start = target_date.replace(day=1)
+    target_days = (target_date - month_start).days + 1
+
+    # ================= HISTORY RANGE (120 DAYS BEFORE → TARGET_DATE) =================
     HF = (target_date - timedelta(days=60)).strftime("%Y-%m-%d")
     HT = target_date.strftime("%Y-%m-%d")
 
-    print("BUSINESS DATE :", TF)
+    # ================= MONTH LABEL =================
+    MONTH_LABEL = datetime.strptime(TF, "%Y-%m-%d").strftime("%B %Y")
+
+    print("\nMONTHLY MODE (BUSINESS DATE CUTOVER ENABLED)")
+    print("BUSINESS DATE :", target_date.strftime("%Y-%m-%d"))
+    print("MONTH         :", MONTH_LABEL)
+    print("TARGET RANGE  :", TF, "→", TT)
+    print("HISTORY RANGE :", HF, "→", HT)
+
+    tf_date = datetime.strptime(TF, "%Y-%m-%d")
+    tt_date = datetime.strptime(TT, "%Y-%m-%d")
+
+    if tt_date < tf_date:
+        raise ValueError("TARGET TO date cannot be before TARGET FROM date")
 
     pending = {k: v for k, v in PROPERTIES.items()}
     success_results = {}
 
-    # ================= RETRY ENGINE =================
     for run_attempt in range(1, MAX_FULL_RUN_RETRIES + 1):
         if not pending:
             break
@@ -463,7 +963,6 @@ async def main():
                 print(f"❌ FAILED → {P['name']} :: {result}")
                 new_pending[key] = P
                 continue
-
             success_results[key] = result
             print(f"✅ OK → {P['name']}")
 
@@ -472,77 +971,94 @@ async def main():
         if pending:
             if run_attempt == MAX_FULL_RUN_RETRIES:
                 raise RuntimeError(
-                    f"FINAL FAILURE: {[p['name'] for p in pending.values()]}"
+                    f"FINAL FAILURE: Properties failed after retries: {[p['name'] for p in pending.values()]}"
                 )
             await asyncio.sleep(FULL_RUN_RETRY_DELAY)
 
     valid_results = [success_results[k] for k in PROPERTIES.keys() if k in success_results]
 
     if len(valid_results) != len(PROPERTIES):
-        raise RuntimeError("DATA INCOMPLETE")
+        missing = [PROPERTIES[k]["name"] for k in PROPERTIES.keys() if k not in success_results]
+        raise RuntimeError(f"DATA INCOMPLETE: Missing properties: {missing}")
 
-    # ================= TELEGRAM SEND =================
-    async with aiohttp.ClientSession() as tg_session:
+    # ================= EXCEL =================
+    wb = Workbook()
+    wb.remove(wb.active)
 
-        consolidated_cash = 0
-        consolidated_qr = 0
-        consolidated_online = 0
-        consolidated_discount = 0
-        consolidated_guests = 0
+    all_dfs = []
+    consolidated_daily_collect = {}
 
-        for name, df in valid_results:
+    for name, df, total_rooms, prop_details, daily_collect in valid_results:
 
-            total_guests = df["Booking Id"].nunique() if not df.empty else 0
+        df = merge_existing_data(name, df, existing_data)
+        all_dfs.append(df)
 
-            cash = round(df["Cash"].sum(), 2) if not df.empty else 0
-            qr = round(df["QR"].sum(), 2) if not df.empty else 0
-            online = round(df["Online"].sum(), 2) if not df.empty else 0
-            discount = round(df["Discount"].sum(), 2) if not df.empty else 0
+        # consolidate daily collection (INCLUDING DISCOUNT)
+        if not df.empty:
 
-            total_amount = cash + qr + online + discount
+            for _, row in df.iterrows():
 
-            msg = build_daily_collection_message(
-                prop=name,
-                report_date=datetime.strptime(TT, "%Y-%m-%d").strftime("%d/%m/%Y"),
-                total_guests=total_guests,
-                total_amount=total_amount,
-                cash=cash,
-                qr=qr,
-                online=online,
-                discount=discount
-            )
+                dkey = str(row["Date"])
 
-            await send_telegram_message(msg, tg_session)
-            await asyncio.sleep(1.2)
+                if dkey not in consolidated_daily_collect:
+                    consolidated_daily_collect[dkey] = {
+                        "cash": 0.0,
+                        "qr": 0.0,
+                        "online": 0.0,
+                        "discount": 0.0
+                    }
 
-            consolidated_cash += cash
-            consolidated_qr += qr
-            consolidated_online += online
-            consolidated_discount += discount
-            consolidated_guests += total_guests
+                consolidated_daily_collect[dkey]["cash"] += float(row.get("Cash", 0) or 0)
+                consolidated_daily_collect[dkey]["qr"] += float(row.get("QR", 0) or 0)
+                consolidated_daily_collect[dkey]["online"] += float(row.get("Online", 0) or 0)
+                consolidated_daily_collect[dkey]["discount"] += float(row.get("Discount", 0) or 0)
 
-        # ================= CONSOLIDATED REPORT =================
-        consolidated_total = (
-            consolidated_cash +
-            consolidated_qr +
-            consolidated_online +
-            consolidated_discount
-        )
+        ws = wb.create_sheet(name)
 
-        consolidated_msg = build_daily_collection_message(
-            prop="ALL PROPERTIES",
-            report_date=datetime.strptime(TT, "%Y-%m-%d").strftime("%d/%m/%Y"),
-            total_guests=consolidated_guests,
-            total_amount=consolidated_total,
-            cash=consolidated_cash,
-            qr=consolidated_qr,
-            online=consolidated_online,
-            discount=consolidated_discount
-        )
+        for r in dataframe_to_rows(df, index=False, header=True):
+            ws.append(r)
 
-        await send_telegram_message(consolidated_msg, tg_session)
+        beautify(ws)
 
-    print("✅ ALL PROPERTY REPORTS SENT")
+        ws.append([])
+        ws.append([])
+        month_start = target_date.replace(day=1).strftime("%Y-%m-%d")
+
+        add_payment_tables(ws, df, daily_collect, month_start, TT)
+        add_property_details_box(ws, prop_details)
+
+    # ================= CONSOLIDATED SHEET =================
+    big = pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame(columns=[
+        "Date", "Booking Id", "Guest Name", "Status", "Booking Source",
+        "Check In", "Check Out",
+        "Cash", "QR", "Online", "Discount", "Total Paid", "Time"
+    ])
+
+    ws = wb.create_sheet("CONSOLIDATED STATISTICS")
+
+    month_start = target_date.replace(day=1).strftime("%Y-%m-%d")
+
+    add_payment_tables(ws, big, consolidated_daily_collect, month_start, TT, title_prefix="CONSOLIDATED — ")
+    beautify(ws)
+
+    # ================= SEND EXCEL =================
+    wb.save(REPORT_FILE)
+    print("💾 Excel saved:", REPORT_FILE)
+
+    buffer = BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+
+    await send_telegram_excel_buffer(
+        buffer,
+        filename=f"Collection_{MONTH_LABEL}.xlsx",
+        caption="📊 Date Wise Collection Report (Paid Only)"
+    )
+
+    print("✅ EXCEL SENT TO TELEGRAM")
+    return
+
+
 # ================= RUN =================
 if __name__ == "__main__":
     try:
