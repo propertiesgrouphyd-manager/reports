@@ -1009,7 +1009,7 @@ async def main():
                 consolidated_daily_collect[dkey]["cash"] += float(row.get("Cash", 0) or 0)
                 consolidated_daily_collect[dkey]["qr"] += float(row.get("QR", 0) or 0)
                 consolidated_daily_collect[dkey]["online"] += float(row.get("Online", 0) or 0)
-               consolidated_daily_collect[dkey]["discount"] += float(row.get("Discount", 0) or 0)
+                consolidated_daily_collect[dkey]["discount"] += float(row.get("Discount", 0) or 0)
 
         ws = wb.create_sheet(name)
 
