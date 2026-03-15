@@ -1,9 +1,9 @@
-name: Incremental1 Reports Automation
+name: Incremental1 Automation
 
 on:
-  workflow_dispatch:   # manual run button
+  workflow_dispatch:
   schedule:
-    - cron: "30 0 * * *"   # runs daily (IST morning ≈ 6:00)
+    - cron: "30 0 * * *"   # runs daily (~6 AM IST)
 
 jobs:
   run:
@@ -17,6 +17,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -31,13 +33,19 @@ jobs:
         run: |
           python incremental1.py
 
-      - name: Commit updated Excel report
+      - name: Commit updated Excel reports
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
 
+          # Pull latest changes to avoid push conflicts
+          git pull --rebase origin main
+
+          # Add only Excel reports
           git add *.xlsx
 
-          git diff --cached --quiet || git commit -m "Auto update collection report"
+          # Commit only if there are changes
+          git diff --cached --quiet || git commit -m "Auto update reports"
 
-          git push
+          # Push back to repository
+          git push origin main
