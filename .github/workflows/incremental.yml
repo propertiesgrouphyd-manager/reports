@@ -1,7 +1,9 @@
-name: Incremental Reports Automation
+name: Incremental1 Reports Automation
 
 on:
-  workflow_dispatch:        # Manual trigger button in GitHub UI
+  workflow_dispatch:   # manual run button
+  schedule:
+    - cron: "30 0 * * *"   # runs daily (IST morning ≈ 6:00)
 
 jobs:
   run:
@@ -13,7 +15,7 @@ jobs:
       OYO_PROPERTIES: ${{ secrets.OYO_PROPERTIES }}
 
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Python
@@ -22,7 +24,20 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
 
-      - name: Run hourly script
-        run: python incremental.py
+      - name: Run report script
+        run: |
+          python incremental.py
+
+      - name: Commit updated Excel report
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "actions@github.com"
+
+          git add *.xlsx
+
+          git diff --cached --quiet || git commit -m "Auto update collection report"
+
+          git push
