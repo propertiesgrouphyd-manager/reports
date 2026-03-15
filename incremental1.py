@@ -20,7 +20,7 @@ import pytz
 IST = pytz.timezone("Asia/Kolkata")
 now = datetime.now(IST)
 
-REPORT_FILE = "Collection_March2026.xlsx"
+REPORT_FILE = f"Collection_{now.strftime('%B %Y')}.xlsx"
 
 MAX_FULL_RUN_RETRIES = 5
 FULL_RUN_RETRY_DELAY = 10
@@ -1059,10 +1059,8 @@ async def main():
     add_payment_tables(ws, big, consolidated_daily_collect, month_start, TT, title_prefix="CONSOLIDATED — ")
     beautify(ws)
 
+    
     # ================= SEND EXCEL =================
-    wb.save(REPORT_FILE)
-    print("💾 Excel saved:", REPORT_FILE)
-
     buffer = BytesIO()
     wb.save(buffer)
     buffer.seek(0)
@@ -1073,9 +1071,14 @@ async def main():
         caption="📊 Date Wise Collection Report (Paid Only)"
     )
 
-    print("✅ EXCEL SENT TO TELEGRAM")
-    return
+    # save same file locally
+    buffer.seek(0)
 
+    with open(REPORT_FILE, "wb") as f:
+        f.write(buffer.read())
+
+    print("💾 Local report updated:", REPORT_FILE)
+    print("✅ EXCEL SENT TO TELEGRAM")
 
 # ================= RUN =================
 if __name__ == "__main__":
