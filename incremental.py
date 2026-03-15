@@ -1602,7 +1602,7 @@ async def main():
 
             await send_telegram_excel_buffer(
                 buffer,
-                filename=f"Revenue_{MONTH_LABEL}.xlsx",
+                filename=f"Bookings_{MONTH_LABEL}.xlsx",
                 caption=f"📊 Monthly Revenue Report"
             )
 
