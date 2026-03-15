@@ -38,6 +38,6 @@ jobs:
 
           git add *.xlsx
 
-          git diff --cached --quiet || git commit -m "Auto update collection report"
+          git diff --cached --quiet || git commit -m "Auto update bookings report"
 
           git push
