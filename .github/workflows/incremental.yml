@@ -1,4 +1,4 @@
-name: Incremental1 Reports Automation
+name: Incremental Reports Automation
 
 on:
   workflow_dispatch:   # manual run button
