@@ -2,8 +2,6 @@ name: incremental1 Automation
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "30 0 * * *"   # daily run (~6 AM IST)
 
 jobs:
   run:
