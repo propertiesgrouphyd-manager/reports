@@ -800,7 +800,7 @@ async def main():
 
     # ================= PREVIOUS MONTH (BASED ON TARGET_DATE) =================
  
-    TF = target_date.strftime("%Y-%m-%d")
+    TF = (target_date - timedelta(days=1)).strftime("%Y-%m-%d")
     TT = TF
 
     HF = (target_date - timedelta(days=30)).strftime("%Y-%m-%d")
