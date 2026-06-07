@@ -808,7 +808,7 @@ async def main():
 
     target_days = 1  # 🔒 DAILY MODE (BASE EXPECTS THIS)
 
-    TF_FMT = target_date.strftime("%d-%m-%Y")
+    TF_FMT = datetime.strptime(TF, "%Y-%m-%d").strftime("%d-%m-%Y")
 
     print("AUTO BUSINESS DATE MODE")
     print("TARGET DATE :", TF)
