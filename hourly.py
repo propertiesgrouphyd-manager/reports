@@ -473,7 +473,7 @@ async def process_property(P, TF, TT, HF, HT):
                     if status != "Checked In":
                         continue
 
-                    if not (ci <= target_dt < co or (ci == tf_date + timedelta(days=1) and target_dt < co)):
+                    if not (ci <= target_dt <= co or (ci == tf_date + timedelta(days=1) and target_dt <= co)):
                         continue
 
                     tasks.append(limited_detail_call(b["booking_no"]))
@@ -913,7 +913,6 @@ if __name__ == "__main__":
         print(e)
         traceback.print_exc()
         print("SCRIPT CRASHED", e, flush=True)
-
 
 
 
