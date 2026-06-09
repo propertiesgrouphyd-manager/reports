@@ -801,7 +801,7 @@ async def main():
     target_days = (datetime.strptime(TT, "%Y-%m-%d") - datetime.strptime(TF, "%Y-%m-%d")).days + 1
 
     # ================= HISTORY RANGE (120 DAYS BEFORE → TARGET_DATE) =================
-    HF = (target_date - timedelta(days=30)).strftime("%Y-%m-%d")
+    HF = (target_date - timedelta(days=60)).strftime("%Y-%m-%d")
     HT = now.date().strftime("%Y-%m-%d")
     # ================= MONTH LABEL =================
     MONTH_LABEL = datetime.strptime(TF, "%Y-%m-%d").strftime("%B %Y")
