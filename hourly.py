@@ -721,7 +721,7 @@ async def main():
     # ================= PREVIOUS MONTH (BASED ON TARGET_DATE) =================
     TF = target_date.strftime("%Y-%m-%d")
     TT = TF
-    HF = (target_date - timedelta(days=30)).strftime("%Y-%m-%d")
+    HF = (target_date - timedelta(days=60)).strftime("%Y-%m-%d")
     HT = now.strftime("%Y-%m-%d")
 
     # ================= SMART RETRY (ONLY FAILED PROPERTIES) =================
