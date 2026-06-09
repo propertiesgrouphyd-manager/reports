@@ -803,7 +803,7 @@ async def main():
     TF = (target_date - timedelta(days=1)).strftime("%Y-%m-%d")
     TT = TF
 
-    HF = (target_date - timedelta(days=31)).strftime("%Y-%m-%d")
+    HF = (target_date - timedelta(days=61)).strftime("%Y-%m-%d")
     HT = now.date().strftime("%Y-%m-%d")
 
     target_days = 1  # 🔒 DAILY MODE (BASE EXPECTS THIS)
