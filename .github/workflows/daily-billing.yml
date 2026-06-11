@@ -1,8 +1,7 @@
 name: Daily Property Reports Billing
 
 on:
-  schedule:
-    - cron: '30 18 * * *'   # 00:00 IST daily
+
   workflow_dispatch:
 
 jobs:
@@ -10,12 +9,9 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_TOKEN: ${{ github.token }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_MAP: ${{ secrets.TELEGRAM_CHAT_MAP }}
-
-      GITHUB_OWNER: propertiesgrouphyd-manager
-      GITHUB_REPO: reports
 
     steps:
       - name: Checkout Repository
@@ -28,7 +24,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install requests pandas openpyxl aiohttp pytz
+          pip install requests openpyxl aiohttp pytz
 
       - name: Capture Start Time
         run: |
@@ -48,8 +44,6 @@ jobs:
           echo "========================================"
           echo "WORKFLOW USAGE SUMMARY"
           echo "========================================"
-          echo "Workflow Name  : Daily Property Reports Billing"
-          echo "Run Date       : $(TZ=Asia/Kolkata date '+%Y-%m-%d')"
-          echo "Run Time IST   : $(TZ=Asia/Kolkata date '+%d-%m-%Y %I:%M:%S %p')"
-          echo "Runtime Sec    : $RUNTIME"
+          echo "Workflow Name : Daily Property Reports Billing"
+          echo "Runtime Sec   : $RUNTIME"
           echo "========================================"
