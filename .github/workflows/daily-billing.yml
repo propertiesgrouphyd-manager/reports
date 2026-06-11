@@ -1,0 +1,55 @@
+name: Daily Property Reports Billing
+
+on:
+  schedule:
+    - cron: '30 18 * * *'   # 00:00 IST daily
+  workflow_dispatch:
+
+jobs:
+  billing:
+    runs-on: ubuntu-latest
+
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_MAP: ${{ secrets.TELEGRAM_CHAT_MAP }}
+
+      GITHUB_OWNER: propertiesgrouphyd-manager
+      GITHUB_REPO: reports
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Dependencies
+        run: |
+          pip install requests pandas openpyxl aiohttp pytz
+
+      - name: Capture Start Time
+        run: |
+          echo "RUN_START=$(date +%s)" >> $GITHUB_ENV
+
+      - name: Generate Daily Billing Report
+        run: |
+          python daily_billing.py
+
+      - name: Workflow Usage Summary
+        if: always()
+        run: |
+          RUN_END=$(date +%s)
+          RUNTIME=$((RUN_END - RUN_START))
+
+          echo ""
+          echo "========================================"
+          echo "WORKFLOW USAGE SUMMARY"
+          echo "========================================"
+          echo "Workflow Name  : Daily Property Reports Billing"
+          echo "Run Date       : $(TZ=Asia/Kolkata date '+%Y-%m-%d')"
+          echo "Run Time IST   : $(TZ=Asia/Kolkata date '+%d-%m-%Y %I:%M:%S %p')"
+          echo "Runtime Sec    : $RUNTIME"
+          echo "========================================"
