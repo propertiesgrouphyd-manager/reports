@@ -164,29 +164,48 @@ def extract_logs_text(zip_bytes):
 import re
 
 def parse_usage(text):
-    keys = [
-        "USAGE_WORKFLOW",
-        "USAGE_PROPERTIES",
-        "USAGE_MESSAGES",
-        "USAGE_EARLY_ALERTS",
-        "USAGE_LATE_ALERTS",
-        "USAGE_FILES",
-    ]
-
-    result = {}
-
-    for key in keys:
+    def get_value(key, default="0"):
         m = re.search(
             rf"{key}=([^\r\n]+)",
             text
         )
 
-        if not m:
-            return None
+        return (
+            m.group(1).strip()
+            if m else default
+        )
 
-        result[key] = m.group(1).strip()
+    workflow = get_value(
+        "USAGE_WORKFLOW",
+        ""
+    )
 
-    return result
+    if not workflow:
+        return None
+
+    return {
+        "USAGE_WORKFLOW": workflow,
+        "USAGE_PROPERTIES": get_value(
+            "USAGE_PROPERTIES",
+            "0"
+        ),
+        "USAGE_MESSAGES": get_value(
+            "USAGE_MESSAGES",
+            "0"
+        ),
+        "USAGE_EARLY_ALERTS": get_value(
+            "USAGE_EARLY_ALERTS",
+            "0"
+        ),
+        "USAGE_LATE_ALERTS": get_value(
+            "USAGE_LATE_ALERTS",
+            "0"
+        ),
+        "USAGE_FILES": get_value(
+            "USAGE_FILES",
+            "0"
+        ),
+    }
 
 
 def calculate_sheets(properties, files):
@@ -355,7 +374,13 @@ def generate_monthly_excel(records):
     usage_cost = 0
 
     for idx, rec in enumerate(records, start=1):
-        ws.cell(row=row, column=1).value = idx
+        cell = ws.cell(row=row, column=1)
+
+        cell.value = idx
+
+        cell.alignment = Alignment(
+            horizontal="left"
+        )
         ws.cell(row=row, column=2).value = rec["Report Name"]
         ws.cell(row=row, column=3).value = rec["Properties"]
         ws.cell(row=row, column=4).value = rec["Messages"]
@@ -429,6 +454,22 @@ def generate_monthly_excel(records):
 
     fixed = get_fixed_costs()
 
+    message_cost = total_messages * 1.0
+    early_cost = total_early * 2.0
+    late_cost = total_late * 2.0
+    file_cost = total_files * 5.0
+    sheet_cost = total_sheets * 0.5
+    runtime_cost = total_runtime * 0.5
+
+    variable_cost_total = (
+        message_cost +
+        early_cost +
+        late_cost +
+        file_cost +
+        sheet_cost +
+        runtime_cost
+    )
+
     infra_cost = (
         fixed["Infrastructure Cost"] *
         days_in_month
@@ -436,7 +477,7 @@ def generate_monthly_excel(records):
 
     technology_cost = (
         fixed["Technology Cost"] *
-       days_in_month
+        days_in_month
     )
 
     operations_cost = (
@@ -449,67 +490,168 @@ def generate_monthly_excel(records):
         days_in_month
     )
 
-    total_monthly_cost = (
-        usage_cost +
+    fixed_cost_total = (
         infra_cost +
         technology_cost +
         operations_cost +
         maintenance_cost
     )
 
+    total_monthly_cost = (
+        variable_cost_total +
+        fixed_cost_total
+    )
+
     ws.cell(row=row, column=1).value = "COST SUMMARY"
-    ws.cell(row=row, column=1).font = Font(bold=True)
+    ws.cell(row=row, column=1).font = Font(
+        bold=True,
+        size=14
+    )
+
+    row += 2
+
+    ws.cell(row=row, column=1).value = "VARIABLE COSTS"
+    ws.cell(row=row, column=1).font = Font(
+        bold=True
+    )
 
     row += 1
-
-    ws.cell(row=row, column=1).value = "Usage Cost"
+    ws.cell(row=row, column=1).value = (
+        f"Messages ({total_messages} × ₹1.00)"
+    )
     ws.cell(row=row, column=2).value = round(
-        usage_cost,
+        message_cost,
         2
     )
 
     row += 1
     ws.cell(row=row, column=1).value = (
-        "Infrastructure Cost"
+        f"Early Alerts ({total_early} × ₹2.00)"
     )
-    ws.cell(row=row, column=2).value = (
-        infra_cost
-    )
-
-    row += 1
-    ws.cell(row=row, column=1).value = (
-        "Technology Cost"
-    )
-    ws.cell(row=row, column=2).value = (
-        technology_cost
+    ws.cell(row=row, column=2).value = round(
+        early_cost,
+        2
     )
 
     row += 1
     ws.cell(row=row, column=1).value = (
-        "Operations Cost"
+        f"Late Alerts ({total_late} × ₹2.00)"
     )
-    ws.cell(row=row, column=2).value = (
-        operations_cost
+    ws.cell(row=row, column=2).value = round(
+        late_cost,
+        2
     )
 
     row += 1
     ws.cell(row=row, column=1).value = (
-        "Maintenance Cost"
+        f"Files ({total_files} × ₹5.00)"
     )
-    ws.cell(row=row, column=2).value = (
-        maintenance_cost
+    ws.cell(row=row, column=2).value = round(
+        file_cost,
+        2
+    )
+
+    row += 1
+    ws.cell(row=row, column=1).value = (
+        f"Sheets ({total_sheets} × ₹0.50)"
+    )
+    ws.cell(row=row, column=2).value = round(
+        sheet_cost,
+        2
+    )
+
+    row += 1
+    ws.cell(row=row, column=1).value = (
+        f"Runtime ({total_runtime} sec × ₹0.50)"
+    )
+    ws.cell(row=row, column=2).value = round(
+        runtime_cost,
+        2
+    )
+
+    row += 1
+    ws.cell(row=row, column=1).value = (
+        "Variable Cost Total"
+    )
+    ws.cell(row=row, column=2).value = round(
+        variable_cost_total,
+        2
+    )
+
+    row += 2
+
+    ws.cell(row=row, column=1).value = "FIXED COSTS"
+    ws.cell(row=row, column=1).font = Font(
+        bold=True
+    )
+
+    row += 1
+    ws.cell(row=row, column=1).value = (
+        f"Infrastructure Cost ({days_in_month} × ₹100)"
+    )
+    ws.cell(row=row, column=2).value = infra_cost
+
+    row += 1
+    ws.cell(row=row, column=1).value = (
+        f"Technology Cost ({days_in_month} × ₹500)"
+    )
+    ws.cell(row=row, column=2).value = technology_cost
+
+    row += 1
+    ws.cell(row=row, column=1).value = (
+        f"Operations Cost ({days_in_month} × ₹150)"
+    )
+    ws.cell(row=row, column=2).value = operations_cost
+
+    row += 1
+    ws.cell(row=row, column=1).value = (
+        f"Maintenance Cost ({days_in_month} × ₹250)"
+    )
+    ws.cell(row=row, column=2).value = maintenance_cost
+
+    row += 1
+    ws.cell(row=row, column=1).value = (
+        "Fixed Cost Total"
+    )
+    ws.cell(row=row, column=2).value = fixed_cost_total
+
+    row += 2
+
+    ws.cell(row=row, column=1).value = "FINAL BILL"
+    ws.cell(row=row, column=1).font = Font(
+        bold=True
+    )
+
+    row += 1
+    ws.cell(row=row, column=1).value = (
+        "Variable Cost Total"
+    )
+    ws.cell(row=row, column=2).value = round(
+        variable_cost_total,
+        2
+    )
+
+    row += 1
+    ws.cell(row=row, column=1).value = (
+        "Fixed Cost Total"
+    )
+    ws.cell(row=row, column=2).value = round(
+        fixed_cost_total,
+        2
     )
 
     row += 1
 
     ws.cell(row=row, column=1).value = (
-        "TOTAL MONTHLY COST"
+        "TOTAL MONTHLY BILL"
     )
 
     ws.cell(row=row, column=1).font = Font(
         bold=True,
         size=14
     )
+
+
 
     ws.cell(row=row, column=2).value = round(
         total_monthly_cost,
@@ -644,7 +786,6 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
 
 
 
