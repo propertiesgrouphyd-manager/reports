@@ -1,0 +1,49 @@
+name: Monthly Property Reports Billing
+
+on:
+
+  workflow_dispatch:
+
+jobs:
+  billing:
+    runs-on: ubuntu-latest
+
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_MAP: ${{ secrets.TELEGRAM_CHAT_MAP }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Dependencies
+        run: |
+          pip install requests openpyxl aiohttp pytz
+
+      - name: Capture Start Time
+        run: |
+          echo "RUN_START=$(date +%s)" >> $GITHUB_ENV
+
+      - name: Generate Monthly Billing Report
+        run: |
+          python monthly_billing.py
+
+      - name: Workflow Usage Summary
+        if: always()
+        run: |
+          RUN_END=$(date +%s)
+          RUNTIME=$((RUN_END - RUN_START))
+
+          echo ""
+          echo "========================================"
+          echo "WORKFLOW USAGE SUMMARY"
+          echo "========================================"
+          echo "Workflow Name : Monthly Property Reports Billing"
+          echo "Runtime Sec   : $RUNTIME"
+          echo "========================================"
