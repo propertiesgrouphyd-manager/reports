@@ -74,6 +74,10 @@ if not PROPERTIES:
 # ✅ Never loses a property message unless Telegram is fully down
 
 TELEGRAM_SEND_LOCK = asyncio.Lock()
+TG_MESSAGES = 0
+EARLY_ALERTS = 0
+LATE_ALERTS = 0
+
 
 async def send_telegram_message(text, retries=15, session=None):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -126,7 +130,10 @@ async def send_telegram_message(text, retries=15, session=None):
                 data = {}
 
             if data.get("ok") is True:
+                global TG_MESSAGES
+                TG_MESSAGES += 1
                 return True
+               
 
             # ok:false -> treat as failure and retry
             desc = data.get("description", "Unknown Telegram error")
@@ -844,6 +851,15 @@ async def main():
                 )
 
                 if alert_msg:
+
+                    global EARLY_ALERTS, LATE_ALERTS
+
+                    if early_checkins:
+                        EARLY_ALERTS += 1
+
+                    if late_checkouts:
+                        LATE_ALERTS += 1
+
                     try:
                         await send_telegram_message(alert_msg, session=tg_session)
                         await asyncio.sleep(1.5)
@@ -902,7 +918,21 @@ async def main():
 
         await send_telegram_message(consolidated_hourly, session=tg_session)
 
-    print("✅ ALL MONTHLY TELEGRAM REPORTS SENT — GUARANTEED")
+        print("")
+        print("========================================")
+        print("USAGE SUMMARY")
+        print("========================================")
+        print("USAGE_WORKFLOW=Hourly Updates")
+        print(f"USAGE_DATE={TF}")
+        print(f"USAGE_PROPERTIES={len(PROPERTIES)}")
+        print(f"USAGE_SUCCESS_PROPERTIES={len(valid_results)}")
+        print(f"USAGE_MESSAGES={TG_MESSAGES}")
+        print("USAGE_FILES=0")
+        print(f"USAGE_EARLY_ALERTS={EARLY_ALERTS}")
+        print(f"USAGE_LATE_ALERTS={LATE_ALERTS}")
+        print("========================================")
+
+        print("✅ ALL HOURLY TELEGRAM REPORTS SENT — GUARANTEED")
 
 # ================= RUN =================
 if __name__ == "__main__":
@@ -913,7 +943,6 @@ if __name__ == "__main__":
         print(e)
         traceback.print_exc()
         print("SCRIPT CRASHED", e, flush=True)
-
 
 
 
