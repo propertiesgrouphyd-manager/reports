@@ -146,29 +146,50 @@ def extract_logs_text(zip_bytes):
 import re
 
 def parse_usage(text):
-    keys = [
-        "USAGE_WORKFLOW",
-        "USAGE_PROPERTIES",
-        "USAGE_MESSAGES",
-        "USAGE_EARLY_ALERTS",
-        "USAGE_LATE_ALERTS",
-        "USAGE_FILES",
-    ]
-
-    result = {}
-
-    for key in keys:
+    def get_value(key, default="0"):
         m = re.search(
             rf"{key}=([^\r\n]+)",
             text
         )
 
-        if not m:
-            return None
+        return (
+            m.group(1).strip()
+            if m else default
+        )
 
-        result[key] = m.group(1).strip()
+    workflow = get_value(
+        "USAGE_WORKFLOW",
+        ""
+    )
 
-    return result
+    properties = get_value(
+        "USAGE_PROPERTIES",
+        ""
+    )
+
+    if not workflow:
+        return None
+
+    return {
+        "USAGE_WORKFLOW": workflow,
+        "USAGE_PROPERTIES": properties or "0",
+        "USAGE_MESSAGES": get_value(
+            "USAGE_MESSAGES",
+            "0"
+        ),
+        "USAGE_EARLY_ALERTS": get_value(
+            "USAGE_EARLY_ALERTS",
+            "0"
+        ),
+        "USAGE_LATE_ALERTS": get_value(
+            "USAGE_LATE_ALERTS",
+            "0"
+        ),
+        "USAGE_FILES": get_value(
+            "USAGE_FILES",
+            "0"
+        ),
+    }
 
 
 def calculate_sheets(properties, files):
@@ -209,6 +230,11 @@ def build_daily_records():
 
     runs = get_successful_runs(start_dt, end_dt)
 
+    print(
+        f"TOTAL RUNS FOUND = "
+        f"{len(runs)}"
+    )
+
     records = []
 
     for run in runs:
@@ -224,7 +250,16 @@ def build_daily_records():
             usage = parse_usage(logs_text)
 
             if not usage:
+                print(
+                    f"NO_USAGE -> "
+                    f"{run.get('name')}"
+                )
                 continue
+
+            print(
+                f"FOUND_USAGE -> "
+                f"{usage['USAGE_WORKFLOW']}"
+            )
 
             properties = int(usage["USAGE_PROPERTIES"])
             messages = int(usage["USAGE_MESSAGES"])
@@ -552,7 +587,6 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
 
 
 
