@@ -52,6 +52,8 @@ def get_chat_id(name: str):
 
 # choose chat key from secret map
 TELEGRAM_CHAT_ID = get_chat_id("7pm")   # change if needed
+TG_MESSAGES = 0
+TG_FILES = 0
 
 
 # ================= PROPERTIES =================
@@ -858,6 +860,9 @@ async def send_telegram_excel_buffer(buffer, filename, caption=None):
                 text = await resp.text()
                 raise RuntimeError(f"Telegram send failed: {text}")
 
+            global TG_FILES
+            TG_FILES += 1
+
 # ================= MAIN =================
 # ================= MAIN (MONTH MODE — BASE STRENGTH GUARANTEE) =================
 async def main():
@@ -1320,6 +1325,20 @@ async def main():
                 caption=f"📊 Daily Bookings Report"
             )
 
+
+            print("")
+            print("========================================")
+            print("USAGE SUMMARY")
+            print("========================================")
+            print("USAGE_WORKFLOW=Bookings Report")
+            print(f"USAGE_DATE={TF}")
+            print(f"USAGE_PROPERTIES={len(PROPERTIES)}")
+            print(f"USAGE_SUCCESS_PROPERTIES={len(valid_results)}")
+            print(f"USAGE_MESSAGES={TG_MESSAGES}")
+            print(f"USAGE_FILES={TG_FILES}")
+            print("USAGE_EARLY_ALERTS=0")
+            print("USAGE_LATE_ALERTS=0")
+            print("========================================")
 
             print("✅ EXCEL SENT TO TELEGRAM (NO LOCAL FILE)")
             return
