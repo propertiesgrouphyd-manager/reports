@@ -372,7 +372,13 @@ def generate_excel(records):
     usage_cost = 0
 
     for idx, rec in enumerate(records, start=1):
-        ws.cell(row=row, column=1).value = idx
+        cell = ws.cell(row=row, column=1)
+
+        cell.value = idx
+
+        cell.alignment = Alignment(
+            horizontal="left"
+        )
         ws.cell(row=row, column=2).value = rec["Report Name"]
         ws.cell(row=row, column=3).value = rec["Properties"]
         ws.cell(row=row, column=4).value = rec["Messages"]
@@ -436,34 +442,196 @@ def generate_excel(records):
 
     fixed = get_fixed_costs()
 
+    message_cost = total_messages * 1.0
+    early_cost = total_early * 2.0
+    late_cost = total_late * 2.0
+    file_cost = total_files * 5.0
+    sheet_cost = total_sheets * 0.5
+    runtime_cost = total_runtime * 0.5
+
+    variable_cost_total = (
+        message_cost +
+        early_cost +
+        late_cost +
+        file_cost +
+        sheet_cost +
+        runtime_cost
+    )
+
+    infra_cost = fixed["Infrastructure Cost"]
+    technology_cost = fixed["Technology Cost"]
+    operations_cost = fixed["Operations Cost"]
+    maintenance_cost = fixed["Maintenance Cost"]
+
+    fixed_cost_total = (
+        infra_cost +
+        technology_cost +
+        operations_cost +
+        maintenance_cost
+    )
+
     total_daily_cost = (
-        usage_cost +
-        fixed["Infrastructure Cost"] +
-        fixed["Technology Cost"] +
-        fixed["Operations Cost"] +
-        fixed["Maintenance Cost"]
+        variable_cost_total +
+        fixed_cost_total
     )
 
     ws.cell(row=row, column=1).value = "COST SUMMARY"
-    ws.cell(row=row, column=1).font = Font(bold=True)
+    ws.cell(row=row, column=1).font = Font(
+        bold=True,
+        size=14
+    )
+
+    row += 2
+
+    ws.cell(row=row, column=1).value = "VARIABLE COSTS"
+    ws.cell(row=row, column=1).font = Font(
+        bold=True
+    )
+
+    row += 1
+    ws.cell(row=row, column=1).value = (
+        f"Messages ({total_messages} × ₹1.00)"
+    )
+    ws.cell(row=row, column=2).value = round(
+        message_cost,
+        2
+    )
+
+    row += 1
+    ws.cell(row=row, column=1).value = (
+        f"Early Alerts ({total_early} × ₹2.00)"
+    )
+    ws.cell(row=row, column=2).value = round(
+        early_cost,
+        2
+    )
+
+    row += 1
+    ws.cell(row=row, column=1).value = (
+        f"Late Alerts ({total_late} × ₹2.00)"
+    )
+    ws.cell(row=row, column=2).value = round(
+        late_cost,
+        2
+    )
+
+    row += 1
+    ws.cell(row=row, column=1).value = (
+        f"Files ({total_files} × ₹5.00)"
+    )
+    ws.cell(row=row, column=2).value = round(
+        file_cost,
+        2
+    )
+
+    row += 1
+    ws.cell(row=row, column=1).value = (
+        f"Sheets ({total_sheets} × ₹0.50)"
+    )
+    ws.cell(row=row, column=2).value = round(
+        sheet_cost,
+        2
+    )
+
+    row += 1
+    ws.cell(row=row, column=1).value = (
+        f"Runtime ({total_runtime} sec × ₹0.50)"
+    )
+    ws.cell(row=row, column=2).value = round(
+        runtime_cost,
+        2
+    )
+
+    row += 1
+    ws.cell(row=row, column=1).value = (
+        "Variable Cost Total"
+    )
+    ws.cell(row=row, column=2).value = round(
+        variable_cost_total,
+        2
+    )
+
+    row += 2
+
+    ws.cell(row=row, column=1).value = "FIXED COSTS"
+    ws.cell(row=row, column=1).font = Font(
+        bold=True
+    )
+
+    row += 1
+    ws.cell(row=row, column=1).value = (
+        "Infrastructure Cost"
+    )
+    ws.cell(row=row, column=2).value = infra_cost
+
+    row += 1
+    ws.cell(row=row, column=1).value = (
+        "Technology Cost"
+    )
+    ws.cell(row=row, column=2).value = technology_cost
+
+    row += 1
+    ws.cell(row=row, column=1).value = (
+        "Operations Cost"
+    )
+    ws.cell(row=row, column=2).value = operations_cost
+
+    row += 1
+    ws.cell(row=row, column=1).value = (
+        "Maintenance Cost"
+    )
+    ws.cell(row=row, column=2).value = maintenance_cost
+
+    row += 1
+    ws.cell(row=row, column=1).value = (
+        "Fixed Cost Total"
+    )
+    ws.cell(row=row, column=2).value = fixed_cost_total
+
+    row += 2
+
+    ws.cell(row=row, column=1).value = "FINAL BILL"
+    ws.cell(row=row, column=1).font = Font(
+        bold=True
+    )
+
+    row += 1
+    ws.cell(row=row, column=1).value = (
+        "Variable Cost Total"
+    )
+    ws.cell(row=row, column=2).value = round(
+        variable_cost_total,
+        2
+    )
+
+    row += 1
+    ws.cell(row=row, column=1).value = (
+        "Fixed Cost Total"
+    )
+    ws.cell(row=row, column=2).value = round(
+        fixed_cost_total,
+        2
+    )
 
     row += 1
 
-    ws.cell(row=row, column=1).value = "Usage Cost"
-    ws.cell(row=row, column=2).value = round(usage_cost, 2)
+    ws.cell(row=row, column=1).value = (
+        "TOTAL DAILY BILL"
+    )
 
-    for k, v in fixed.items():
-        row += 1
-        ws.cell(row=row, column=1).value = k
-        ws.cell(row=row, column=2).value = v
-
-    row += 1
-
-    ws.cell(row=row, column=1).value = "TOTAL DAILY COST"
+    ws.cell(row=row, column=1).font = Font(
+        bold=True,
+        size=14
+    )
 
     ws.cell(row=row, column=2).value = round(
         total_daily_cost,
         2
+    )
+
+    ws.cell(row=row, column=2).font = Font(
+        bold=True,
+        size=14
     )
 
     from openpyxl.utils import get_column_letter
@@ -587,7 +755,6 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
 
 
 
