@@ -685,7 +685,7 @@ def get_chat_id(key):
     return str(chat_map[key])
 
 async def send_telegram_excel(filename):
-    chat_id = get_chat_id("6am")
+    chat_id = get_chat_id("bill")
 
     url = (
         f"https://api.telegram.org/bot"
@@ -755,7 +755,6 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
 
 
 
