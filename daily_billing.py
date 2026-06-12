@@ -238,6 +238,13 @@ def build_daily_records():
     records = []
 
     for run in runs:
+
+        if run.get("name") in [
+            "Daily Property Reports Billing",
+            "Monthly Property Reports Billing"
+        ]:
+            continue
+
         try:
             run_id = run["id"]
 
@@ -250,16 +257,30 @@ def build_daily_records():
             usage = parse_usage(logs_text)
 
             if not usage:
+
+                usage = {
+                    "USAGE_WORKFLOW": run.get(
+                        "name",
+                        "Unknown"
+                    ),
+                    "USAGE_PROPERTIES": "0",
+                    "USAGE_MESSAGES": "0",
+                    "USAGE_EARLY_ALERTS": "0",
+                    "USAGE_LATE_ALERTS": "0",
+                    "USAGE_FILES": "0",
+                }
+
                 print(
-                    f"NO_USAGE -> "
+                    f"ASSUMED_USAGE -> "
                     f"{run.get('name')}"
                 )
-                continue
+            else:
+                print(
+                    f"FOUND_USAGE -> "
+                    f"{usage['USAGE_WORKFLOW']}"
+                )
 
-            print(
-                f"FOUND_USAGE -> "
-                f"{usage['USAGE_WORKFLOW']}"
-            )
+
 
             properties = int(usage["USAGE_PROPERTIES"])
             messages = int(usage["USAGE_MESSAGES"])
@@ -755,7 +776,6 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
 
 
 
