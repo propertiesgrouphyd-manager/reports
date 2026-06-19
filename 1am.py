@@ -913,7 +913,7 @@ async def main():
     await send_telegram_excel_buffer(
         buffer,
         filename=f"Collection_{TF_FMT}.xlsx",
-        caption="📊 Date Wise Collection Report (Paid Only)"
+        caption="📊 Daily Collection Report (Paid Only)"
     )
 
     print("✅ EXCEL SENT TO TELEGRAM")
